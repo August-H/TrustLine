@@ -261,6 +261,11 @@ function warningPageUrl(targetUrl, result, reason) {
   page.searchParams.set("verdict", result?.verdict ?? "dangerous");
   if (result?.score !== undefined) page.searchParams.set("score", String(result.score));
   page.searchParams.set("reason", reason ?? result?.reasons?.[0] ?? "This site was flagged by TrustLine");
+  // Full context so the warning page can render an itemized threat breakdown.
+  const reasons = [...(reason ? [reason] : []), ...(result?.reasons ?? [])];
+  if (reasons.length) page.searchParams.set("reasons", JSON.stringify([...new Set(reasons)]));
+  if (result?.source) page.searchParams.set("source", result.source);
+  if (result?.scannedAt) page.searchParams.set("ts", String(result.scannedAt));
   return page.toString();
 }
 

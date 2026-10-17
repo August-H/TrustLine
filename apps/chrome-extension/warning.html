@@ -7,38 +7,156 @@
     <link rel="stylesheet" href="warning.css" />
   </head>
   <body data-status="dangerous">
-    <main class="panel">
-      <div class="badge" aria-hidden="true">
-        <svg viewBox="0 0 24 24">
-          <path d="M12 2 4 5v6c0 5.1 3.4 9.4 8 11 4.6-1.6 8-5.9 8-11V5l-8-3Z" />
-          <path d="m9.5 9.5 5 5M14.5 9.5l-5 5" />
-        </svg>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2 4 5v6c0 5.1 3.4 9.4 8 11 4.6-1.6 8-5.9 8-11V5l-8-3Z" />
+          </svg>
+          <span>TrustLine</span>
+        </div>
+        <p class="status-badge" role="status">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span>Intervention active // Connection intercepted</span>
+        </p>
+        <p class="topbar-meta">
+          <time id="scan-time"></time>
+          <span class="sep" aria-hidden="true">·</span>
+          <span id="scan-source">Unknown source</span>
+        </p>
       </div>
-      <p class="eyebrow">TrustLine blocked this page</p>
-      <h1 id="title">This site may be dangerous</h1>
-      <p class="lead">
-        TrustLine flagged <strong id="domain">this site</strong> before it finished loading.
-        Attackers can use sites like this to steal passwords, payment details, or install malware.
-      </p>
+    </header>
 
-      <dl class="facts">
-        <div>
-          <dt>Trust score</dt>
-          <dd><span id="score">--</span><span class="muted">/100</span></dd>
+    <main class="wrap">
+      <section class="hero" aria-labelledby="title">
+        <div class="hero-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="M12 2 4 5v6c0 5.1 3.4 9.4 8 11 4.6-1.6 8-5.9 8-11V5l-8-3Z" />
+            <path d="m9.5 9.5 5 5M14.5 9.5l-5 5" />
+          </svg>
         </div>
-        <div>
-          <dt>Reason</dt>
-          <dd id="reason">Flagged by TrustLine</dd>
-        </div>
-        <div>
-          <dt>Address</dt>
-          <dd class="mono" id="url"></dd>
-        </div>
-      </dl>
+        <div class="hero-body">
+          <p class="eyebrow" id="eyebrow">TrustLine blocked this page</p>
+          <h1 id="title">This site may be dangerous</h1>
+          <p class="lead">
+            TrustLine stopped this page before it finished loading. The destination below shows
+            signals commonly used by phishing, fraud, and malware sites.
+          </p>
+          <p class="domain-pill mono" id="domain">unknown host</p>
 
-      <div class="actions">
-        <button type="button" class="primary" id="back">Back to safety</button>
-        <button type="button" class="ghost" id="proceed">Continue anyway</button>
+          <div class="meter" aria-labelledby="meter-label">
+            <div class="meter-head">
+              <span id="meter-label">Trust score</span>
+              <span class="meter-value"><strong id="score">--</strong><span class="muted">/100</span></span>
+            </div>
+            <div class="meter-track" role="meter" id="meter" aria-valuemin="0" aria-valuemax="100" aria-labelledby="meter-label">
+              <div class="meter-fill" id="meter-fill"></div>
+              <span class="meter-tick" style="left: 40%"></span>
+              <span class="meter-tick" style="left: 70%"></span>
+            </div>
+            <div class="meter-scale" aria-hidden="true">
+              <span>Dangerous</span>
+              <span style="left: 40%">Suspicious</span>
+              <span style="left: 70%">Safe</span>
+            </div>
+          </div>
+        </div>
+        <div class="hero-cta">
+          <button type="button" class="primary" id="back">Return to Safety</button>
+          <p class="cta-note">Recommended. Nothing from this site has been loaded.</p>
+        </div>
+      </section>
+
+      <div class="grid">
+        <div class="col-main">
+          <section class="card" aria-labelledby="why-title">
+            <header class="card-head">
+              <h2 id="why-title">Why is this site not safe?</h2>
+              <span class="count" id="finding-count">0 signals</span>
+            </header>
+            <ol class="findings" id="findings"></ol>
+          </section>
+
+          <section aria-labelledby="risks-title">
+            <h2 class="section-title" id="risks-title">What happens if you continue?</h2>
+            <div class="risks" id="risks"></div>
+          </section>
+
+          <section class="card" aria-labelledby="meta-title">
+            <header class="card-head">
+              <h2 id="meta-title">Technical inspection</h2>
+            </header>
+            <dl class="meta" id="meta"></dl>
+          </section>
+        </div>
+
+        <aside class="col-side">
+          <section class="card advice" aria-labelledby="advice-title">
+            <h2 id="advice-title">Safer alternatives</h2>
+            <ul>
+              <li>Go back and don't enter any information on this site.</li>
+              <li>Expecting a real service? Type its official address yourself instead of following a link.</li>
+              <li>If you already entered a password here, change it now and turn on 2FA.</li>
+            </ul>
+          </section>
+
+          <details class="card override" id="override">
+            <summary>
+              <span>
+                <span class="override-title">Think this is a mistake?</span>
+                <span class="override-sub">Override intervention · 3 steps</span>
+              </span>
+              <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+            </summary>
+
+            <ol class="steps">
+              <li class="step" id="step-ack" data-state="active">
+                <span class="step-num" aria-hidden="true">1</span>
+                <div class="step-body">
+                  <p class="step-title">Acknowledge the risks</p>
+                  <label class="check">
+                    <input type="checkbox" id="ack" />
+                    <span>I have read the security analysis above and understand that proceeding exposes my data and device to potential compromise.</span>
+                  </label>
+                </div>
+              </li>
+
+              <li class="step" id="step-verify" data-state="locked">
+                <span class="step-num" aria-hidden="true">2</span>
+                <div class="step-body">
+                  <p class="step-title">Wait, then verify the address</p>
+                  <div class="cooldown" aria-live="polite">
+                    <div class="cooldown-track"><div class="cooldown-fill" id="cooldown-fill"></div></div>
+                    <span class="cooldown-text" id="cooldown-text">Cooldown starts after step 1</span>
+                  </div>
+                  <label class="field-label" for="confirm-host">
+                    Type the flagged hostname exactly. Check every character for look-alike tricks.
+                  </label>
+                  <p class="expected mono" id="expected-host"></p>
+                  <input
+                    type="text"
+                    id="confirm-host"
+                    class="mono"
+                    autocomplete="off"
+                    autocapitalize="off"
+                    autocorrect="off"
+                    spellcheck="false"
+                    disabled
+                  />
+                  <p class="field-hint" id="confirm-hint">Pasting is disabled. Type it out by hand.</p>
+                </div>
+              </li>
+
+              <li class="step" id="step-proceed" data-state="locked">
+                <span class="step-num" aria-hidden="true">3</span>
+                <div class="step-body">
+                  <p class="step-title">Proceed at your own risk</p>
+                  <button type="button" class="danger" id="proceed" disabled>Allowlist for this session &amp; Proceed</button>
+                </div>
+              </li>
+            </ol>
+          </details>
+        </aside>
       </div>
     </main>
     <script src="warning.js"></script>
