@@ -1,68 +1,75 @@
-# TrustLine Chrome Extension
+# TrustLine Chrome extension
 
-Manifest V3 popup + service worker that shows how trustworthy the active tab is, backed by the TrustLine macOS daemon.
+The Manifest V3 extension shows scores from the Python daemon and starts remote
+Cloudflare Browser Run reviews from the **Deep scan** button.
 
-## Load it in Chrome
+## Run it
 
-1. Open `chrome://extensions` and enable **Developer mode**.
-2. Click **Load unpacked** and select this `apps/chrome-extension` folder.
-3. Pin TrustLine from the puzzle-piece menu. The toolbar shield turns green, amber or red per tab.
+1. Configure the daemon's TypeSafe and Cloudflare keys and connect your ChatGPT
+   subscription as described in [daemon setup](../macos-daemon/README.md).
+2. Start the daemon with `.venv/bin/python run.py serve` from `apps/macos-daemon`.
+   It starts both the inspection proxy on port 8899 and the extension API on 8765.
+3. Open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**,
+   and select this `apps/chrome-extension` directory. Pin TrustLine.
+4. After updating the extension, click its **Reload** button in `chrome://extensions`.
 
-You can also open `popup.html` from any local web server to preview the UI with demo data (no Chrome APIs needed).
+The extension can request scores and cloud reviews in an ordinary Chrome window.
+Holding uncertain pages before they load still requires Chrome to use the daemon
+proxy and trust its certificate. The extension alone scans after navigation starts.
 
-## Files
+## Scores and Deep scan
 
-| File | Purpose |
-| --- | --- |
-| `manifest.json` | MV3 manifest (`tabs`, `storage`, host access to the daemon on port 8765) |
-| `background.js` | Service worker: daemon client, mock analyzer, auto-scan, toolbar icon/badge, warning redirect |
-| `popup.html` / `popup.css` / `popup.js` | Popup UI (status card, Trust Meter, Deep Scan, auto-scan toggle, preview switcher) |
-| `warning.html` / `warning.css` / `warning.js` | Bundled warning landing page used when a dangerous site is blocked |
+- Domains in SQLite's permanent `approved_sites` table, including their subdomains,
+  show **100** and skip Jev and Cloudflare. Initially these are YouTube and LinkedIn.
+- Other domains show `round(100 * (1 - Jev suspiciousness probability))`.
+  A Jev probability of 0.91 therefore displays a trust score of 9. Jev receives only
+  origin metadata, not cookies, page contents, URL paths, or query parameters.
+- **Deep scan** starts a cloud browser review using the daemon's existing Cloudflare
+  and ChatGPT configuration. The service worker polls its job so closing the popup
+  does not stop the review. A pending proxy review is reused; a completed review
+  is rescanned when Deep scan is clicked again.
+- The cloud verdict and evidence control the result and dangerous-site warning.
+  They do not replace the Jev score. A page can have a high URL score and still be
+  blocked because the cloud browser observed a scam in its contents.
+- Successful page reviews persist for 24 hours in `scanned_pages`, separate from
+  permanent trusted domains. These page approvals do not give the whole domain 100.
+- Missing Jev results display `--`. An unavailable cloud review reports a failure or
+  inconclusive result. The installed extension never generates mock scores.
 
-## Daemon API contract (proposed)
+Auto-scan runs quick database/Jev checks on navigation. Turning it off controls
+extension scans and warning redirects, not the separate proxy's enforcement.
 
-The daemon has no code in the repo yet, so the extension targets this contract. All settings live in `CONFIG` at the top of `background.js`.
+## Loopback API
 
-Base URL: `http://127.0.0.1:8765`
+Base URL: `http://127.0.0.1:8765`. Set `serve --api-port PORT` and update
+`CONFIG.DAEMON_BASE_URL` plus manifest host permissions to use a different port.
 
-### `GET /health`
+- `GET /health`: daemon version and whether cloud review is configured.
+- `POST /v1/analyze`: JSON `{ "url": "https://example.com/", "mode": "quick" }`.
+  Returns `score`, `verdict`, `verified`, `score_source`, `jev_probability`, `reasons`
+  and `target_url`. Use `"mode": "deep"` to also receive a `review` containing a
+  job `token`, `status`, `reason` and `evidence`.
+- `GET /v1/reviews/TOKEN`: poll `pending`, `allow`, `block`, or `inconclusive`.
 
-```json
-{ "status": "ok", "version": "0.1.0" }
+The API binds only to loopback, rejects website origins and non-loopback Host
+headers, and requires JSON for analysis. Cloud reviews share the proxy's bounded
+queue, privacy restrictions and SQLite approval store. API requests are not logged.
+No API keys or ChatGPT tokens are returned to the extension.
+
+## Warning page and preview
+
+Dangerous verdicts redirect to the bundled `warning.html`. The user can go back,
+expand the reasons, or acknowledge the risks, wait five seconds, manually type
+the hostname, and allow that hostname for the browser session. This override is
+extension-only and cannot override a daemon block or alter its SQLite database.
+
+Open `popup.html` from a local web server for a standalone UI preview. The preview
+switcher is hidden in the installed extension so demo scores cannot replace real
+scores. `Test warning` remains available for checking the warning-page UI.
+
+## Tests
+
+```sh
+node --test apps/chrome-extension/tests/background.test.cjs
+apps/macos-daemon/.venv/bin/python -m unittest discover -s apps/macos-daemon/tests -q
 ```
-
-Any 2xx response counts as online. The result is cached for 10 seconds.
-
-### `POST /v1/analyze`
-
-Request:
-
-```json
-{ "url": "https://example.com/login", "mode": "quick" }
-```
-
-`mode` is `"quick"` (on navigation, 8 s timeout) or `"deep"` (the Deep Scan button, 90 s timeout).
-
-Response:
-
-```json
-{
-  "verdict": "safe",
-  "score": 92,
-  "reasons": ["Valid TLS certificate", "Domain registered 12 years ago"]
-}
-```
-
-- `score`: 0–100, higher is more trustworthy. `trust_score` and `trustScore` are also accepted.
-- `verdict`: `safe` | `suspicious` | `dangerous`. Aliases such as `blocked`, `malicious` and `warning` are mapped. If it is omitted, the verdict comes from the score (≥70 safe, ≥40 suspicious, otherwise dangerous).
-- `reasons`: optional, up to 6 short strings shown as signals in the popup.
-
-## Mock mode
-
-If `/health` or `/v1/analyze` fails, the extension falls back to a local heuristic analyzer (HTTP, raw IPs, punycode, credential-bait keywords, abused TLDs, etc.), and the header pill reads **Mock Mode**. When the daemon comes back, it switches to **Daemon Active** on its own.
-
-The **Preview** switcher at the bottom of the popup (Live / Safe / Suspicious / Dangerous) overrides only what the popup shows, for demos.
-
-## Warning page
-
-When auto-scan is on and a site comes back `dangerous`, the tab is redirected to the warning page. **Continue anyway** allowlists that domain for the browser session. To use the hosted page in `apps/web` instead, set `CONFIG.WARNING_PAGE_URL`; the page receives `url`, `verdict`, `score` and `reason` query parameters.

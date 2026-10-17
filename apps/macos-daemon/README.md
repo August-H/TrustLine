@@ -99,7 +99,9 @@ References: [registration](https://developers.openai.com/siwc/token-sharing-open
 .venv/bin/python run.py serve
 ```
 
-The proxy listens on `127.0.0.1:8899`. Options include `serve --port 8899
+The proxy listens on `127.0.0.1:8899`, and the Chrome extension API listens on
+`127.0.0.1:8765`. The API shares the same Jev worker, cloud review queue and SQLite
+approvals. `serve --api-port PORT` changes the API port. Options include `serve --port 8899
 --threshold 0.95 --model jev-latest`. The threshold is a starting policy, not a
 validated measure of real-world detection accuracy.
 
@@ -310,3 +312,22 @@ be confirmed, disconnect TrustLine in ChatGPT Settings. Remove the LaunchAgent
 plist and TrustLine CA from Keychain Access, and restore any proxy settings you
 changed manually. The state directory contains the Chrome profile, CA, domain
 allowlist, and protected ChatGPT credentials.
+
+## Chrome extension integration
+
+Load [the extension](../chrome-extension/README.md) to see database/Jev trust scores
+or start a **Deep scan** in Cloudflare Browser Run. `serve` starts the loopback API
+alongside the proxy; there is no second process to configure. The API provides
+`GET /health`, `POST /v1/analyze`, and `GET /v1/reviews/TOKEN` on port 8765.
+It accepts Chrome extension origins and native clients with no Origin header,
+requires JSON for analysis, rejects website origins and non-loopback Host headers,
+and does not log requests.
+
+The extension score is 100 for permanent verified domains. Otherwise it is the
+rounded inverse of Jev's suspiciousness probability, multiplied by 100, or null
+when Jev cannot score the URL. A cloud review produces a separate verdict and
+evidence and does not change this URL-based score. Successful reviews still save
+exact-page approvals to SQLite for 24 hours; they do not promote a domain into the
+permanent verified list. Explicit Deep scans repeat completed reviews and reuse
+reviews already pending in the proxy. Known verified domains always bypass both
+models, including when Deep scan is requested.

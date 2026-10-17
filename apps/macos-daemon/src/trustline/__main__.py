@@ -53,6 +53,7 @@ def main():
     daemon.add_argument("--model", default="jev-latest")
     daemon.add_argument("--threshold", type=float, default=0.9)
     daemon.add_argument("--port", type=int, default=8899)
+    daemon.add_argument("--api-port", type=int, default=8765, help="Loopback Chrome extension API port")
     browser = commands.add_parser("launch-chrome", help="Open a Chrome session using the proxy")
     browser.add_argument("--port", type=int, default=8899)
     inspect = commands.add_parser("inspect", help="Assess a URL directly without opening it")
@@ -120,6 +121,8 @@ def main():
             return
         if hasattr(args, "port") and not 1 <= args.port <= 65535:
             raise ValueError("Port must be between 1 and 65535")
+        if args.command == "serve" and (not 1 <= args.api_port <= 65535 or args.api_port == args.port):
+            raise ValueError("API port must be between 1 and 65535 and different from the proxy port")
         if args.command == "launch-chrome":
             from .browser import launch_chrome
             launch_chrome(args.state_dir, args.port)
@@ -140,7 +143,7 @@ def main():
                 reviewer = None
                 if account.status()["using_chatgpt_plan"] and account_id and token:
                     reviewer = RemoteReviewer(ChatGPTPlanClient(account), lambda: CloudflareBrowser(account_id, token))
-                asyncio.run(run_proxy(args.state_dir, inspector, args.port, reviewer=reviewer))
+                asyncio.run(run_proxy(args.state_dir, inspector, args.port, reviewer=reviewer, api_port=args.api_port))
             else:
                 print(json.dumps(inspector.inspect({"url": args.url})))
         elif args.command == "approved":

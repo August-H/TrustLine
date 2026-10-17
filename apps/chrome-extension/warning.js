@@ -242,7 +242,7 @@ function renderHeader() {
   document.getElementById("title").textContent = paused ? "This site looks suspicious" : "This site may be dangerous";
   const lead = document.getElementById("lead");
   lead.replaceChildren(
-    paused ? "TrustLine paused it before it opened. " : "TrustLine stopped it before it opened. "
+    paused ? "TrustLine flagged this website for caution. " : "TrustLine flagged this website as dangerous. "
   );
   if (score === null) {
     lead.append(paused ? "Some things about it look like a scam." : "It looks like a scam or fake website.");

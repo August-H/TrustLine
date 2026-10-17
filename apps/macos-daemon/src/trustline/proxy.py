@@ -167,7 +167,7 @@ class InspectionProxy:
         self.executor.shutdown(wait=False, cancel_futures=True)
 
 
-async def run_proxy(state_dir: Path, inspector: Inspector, port: int = 8899, extra_addons=(), reviewer=None):
+async def run_proxy(state_dir: Path, inspector: Inspector, port: int = 8899, extra_addons=(), reviewer=None, api_port=None):
     os.umask(0o077)
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     state_dir.chmod(0o700)
@@ -193,11 +193,19 @@ async def run_proxy(state_dir: Path, inspector: Inspector, port: int = 8899, ext
                               ssl_insecure=False, http2=True)
         addon = InspectionProxy(inspector, ReviewManager(reviewer, approvals=ReviewedPages(inspector.sites.path)))
         master.addons.add(addon, *extra_addons)
+        api_server = None
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, master.shutdown)
         try:
+            if api_port is not None:
+                from .api import start_api
+                api_server = start_api(addon, api_port)
+                print(f"TrustLine extension API starting on 127.0.0.1:{api_port}", file=sys.stderr, flush=True)
             print(f"TrustLine proxy starting on 127.0.0.1:{port}", file=sys.stderr, flush=True)
             await master.run()
         finally:
+            if api_server is not None:
+                api_server.stop()
+                await api_server.close_all_connections()
             addon.done()

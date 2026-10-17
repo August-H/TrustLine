@@ -90,10 +90,18 @@ class ReviewManager:
         origin, _ = normalize_origin(url)
         return origin in self.resource_grants
 
-    def start(self, url, method="GET"):
+    def start(self, url, method="GET", *, force=False):
         self.prune()
         key = request_key(url)
         existing = self.records.get(self.by_url.get(key))
+        retry_token = None
+        if force and existing and existing.status != "pending":
+            # Preserve checking-page capabilities when an explicit scan retries a
+            # completed job. Reloading that page must still find the new result.
+            retry_token = existing.token
+            self.records.pop(existing.token)
+            self.by_url.pop(key, None)
+            existing = None
         if existing and existing.status == "allow" and not self.allowed(url, "main_frame", method):
             self.records.pop(existing.token)
             self.by_url.pop(key, None)
@@ -102,7 +110,7 @@ class ReviewManager:
             return existing
         if len(self.records) >= self.max_records:
             return None
-        row = Review(secrets.token_urlsafe(24), key, time.monotonic())
+        row = Review(retry_token or secrets.token_urlsafe(24), key, time.monotonic())
         self.records[row.token] = row
         self.by_url[key] = row.token
         if self.approvals is not None:
