@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TrustLine</title>
+    <link rel="stylesheet" href="fonts/fonts.css" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body data-status="idle">
+    <header class="header">
+      <div class="brand">
+        <svg class="brand-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 2 4 5v6c0 5.1 3.4 9.4 8 11 4.6-1.6 8-5.9 8-11V5l-8-3Z" />
+          <rect x="9" y="10.5" width="6" height="5" rx="1" />
+          <path d="M10.25 10.5V9a1.75 1.75 0 0 1 3.5 0v1.5" />
+        </svg>
+        <span class="brand-name">TrustLine</span>
+      </div>
+      <div class="pill" id="daemonPill" data-state="pending">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="daemonLabel">Connecting…</span>
+      </div>
+    </header>
+
+    <main class="content">
+      <section class="card status-card" aria-live="polite">
+        <div class="status-icon" id="statusIcon" aria-hidden="true"></div>
+        <p class="verdict" id="verdict">Checking this page…</p>
+        <p class="verdict-meta" id="verdictMeta"></p>
+      </section>
+
+      <section class="card meter-card">
+        <div class="meter-head">
+          <span class="section-title">Trust meter</span>
+          <span class="score"><span id="scoreValue">--</span><span class="score-max">/100</span></span>
+        </div>
+        <div
+          class="track"
+          id="meterTrack"
+          role="meter"
+          aria-label="Trust score"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+        >
+          <div class="fill" id="meterFill"></div>
+        </div>
+        <p class="helper">How safe we think this site is</p>
+        <ul class="signals" id="signals" hidden></ul>
+      </section>
+
+      <button class="scan-btn" id="scanBtn" type="button">
+        <svg class="scan-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
+          <path d="M7 12h10" />
+        </svg>
+        <span id="scanLabel">Deep scan</span>
+        <span class="scan-beam" aria-hidden="true"></span>
+      </button>
+      <p class="scan-status" id="scanStatus" aria-live="polite"></p>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-row">
+        <label class="toggle">
+          <input type="checkbox" id="autoScan" role="switch" />
+          <span class="switch" aria-hidden="true"></span>
+          <span class="toggle-label">Auto-scan websites</span>
+        </label>
+        <button class="ghost-btn" id="testRedirect" type="button" title="Send this tab to the warning landing page">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 9v4M12 17h.01" />
+            <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+          </svg>
+          Test warning
+        </button>
+      </div>
+      <div class="demo-row">
+        <span class="demo-label">Preview</span>
+        <div class="segmented" id="demoSwitcher" role="radiogroup" aria-label="Preview state">
+          <button type="button" role="radio" data-demo="live">Live</button>
+          <button type="button" role="radio" data-demo="safe">Safe</button>
+          <button type="button" role="radio" data-demo="suspicious">Suspicious</button>
+          <button type="button" role="radio" data-demo="dangerous">Dangerous</button>
+        </div>
+      </div>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

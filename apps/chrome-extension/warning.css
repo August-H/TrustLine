@@ -1,0 +1,368 @@
+/* TrustLine block page.
+   A road-sign stop band up top; the address below it is the hero, marked up
+   like a proofread manuscript so people learn to read addresses themselves. */
+
+:root {
+  --page: #f7f8fa;
+  --surface: #ffffff;
+  --ink: #1b2430;
+  --muted: #4a5361;
+  --rule: #d9dde3;
+  --rule-strong: #b8bfc9;
+
+  --stop: #b3261e;
+  --stop-tint: #fcebe9;
+  --caution: #8a5a00;
+  --caution-tint: #fff4d6;
+  --go: #1e6b47;
+  --go-hover: #17553a;
+
+  /* The band and marks follow the verdict. */
+  --signal: var(--stop);
+  --signal-tint: var(--stop-tint);
+
+  --sans: "Atkinson Hyperlegible Next", "Atkinson Hyperlegible", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --mono: "Atkinson Hyperlegible Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  color-scheme: light;
+}
+
+body[data-status="suspicious"] {
+  --signal: var(--caution);
+  --signal-tint: var(--caution-tint);
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; }
+
+body {
+  min-height: 100vh;
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, p { margin: 0; }
+.mono { font-family: var(--mono); }
+
+button { font: inherit; cursor: pointer; }
+
+:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+
+/* ------------------------------------------------------------------ band */
+
+.band {
+  background: var(--signal);
+  color: #ffffff;
+}
+
+.band-inner {
+  max-width: 1220px;
+  margin: 0 auto;
+  padding: 10px 32px 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 16px;
+  font-weight: 700;
+}
+.brand-mark { width: 20px; height: 20px; fill: currentColor; }
+
+.band-body {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 20px;
+}
+
+.band-icon {
+  width: 56px;
+  height: 56px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+h1 { font-size: 36px; font-weight: 800; line-height: 1.1; letter-spacing: -0.01em; }
+.lead { margin-top: 4px; font-size: 19px; }
+
+.band-cta { display: grid; gap: 6px; justify-items: center; }
+
+.go-back {
+  min-height: 56px;
+  padding: 0 28px;
+  border: 3px solid #ffffff;
+  border-radius: 8px;
+  background: var(--go);
+  color: #ffffff;
+  font-size: 19px;
+  font-weight: 700;
+}
+.go-back:hover { background: var(--go-hover); }
+.go-back:focus-visible { outline-color: #ffffff; }
+.cta-note { font-size: 15px; }
+
+/* --------------------------------------------------------------- address */
+
+.wrap {
+  max-width: 1220px;
+  margin: 0 auto;
+  padding: 0 32px 14px;
+}
+
+.address {
+  padding: 0 0 12px;
+  border-bottom: 2px solid var(--ink);
+}
+
+.address-label { color: var(--muted); font-size: 17px; }
+
+/* Sized by JS (--chars) so long addresses stay on one line where possible. */
+.address-text {
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: clamp(24px, calc((min(100vw, 1220px) - 64px - 396px) / (var(--chars, 24) * 0.68)), 56px);
+  font-weight: 700;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+/* The part of the address that actually decides who owns the site. */
+.owner {
+  text-decoration: underline;
+  text-decoration-color: var(--signal);
+  text-decoration-thickness: 4px;
+  text-underline-offset: 8px;
+}
+
+/* A character pretending to be another one. */
+.lookalike {
+  padding: 0 2px;
+  border-radius: 4px;
+  background: var(--signal);
+  color: #ffffff;
+}
+
+.address-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 32px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.address-notes li { position: relative; padding-left: 18px; }
+.address-notes li::before {
+  content: "";
+  position: absolute;
+  top: 0.45em;
+  left: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--signal);
+}
+.address-notes code { font-family: var(--mono); font-weight: 700; }
+
+.lead strong { font-weight: 800; }
+
+/* ------------------------------------------------------------------ grid */
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 36px;
+  margin-top: 14px;
+  align-items: start;
+}
+
+.col-main { display: grid; gap: 16px; min-width: 0; }
+
+h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
+
+/* -------------------------------------------------------------- findings */
+
+.findings { margin: 6px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--rule); }
+
+.finding {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  gap: 0 16px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.finding[hidden] { display: none; }
+
+.tag { font-size: 15px; font-weight: 700; color: var(--muted); }
+.tag[data-tag="high"] { color: var(--stop); }
+.tag[data-tag="heuristic"], .tag[data-tag="network"] { color: var(--caution); }
+
+.finding-title { font-weight: 700; }
+.finding-detail { grid-column: 2; color: var(--muted); font-size: 16px; }
+
+.more {
+  margin-top: 2px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ----------------------------------------------------------------- risks */
+
+.risks {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.risk { padding: 0 20px; }
+.risk:first-child { padding-left: 0; }
+.risk + .risk { border-left: 1px solid var(--rule); }
+
+.risk-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.risk-icon {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: var(--signal);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.risk h3 { font-size: 17px; font-weight: 800; line-height: 1.25; }
+.risk p { color: var(--muted); font-size: 16px; }
+
+/* -------------------------------------------------------------- override */
+
+.override {
+  border: 2px solid var(--rule-strong);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.override summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-radius: 6px;
+  cursor: pointer;
+  list-style: none;
+}
+.override summary::-webkit-details-marker { display: none; }
+.override[open] summary { border-bottom: 1px solid var(--rule); border-radius: 6px 6px 0 0; }
+.override-title { display: block; font-size: 18px; font-weight: 800; }
+.override-sub { display: block; color: var(--muted); font-size: 15px; }
+.chev { width: 22px; height: 22px; fill: none; stroke: var(--ink); stroke-width: 2; transition: transform 150ms; }
+.override[open] .chev { transform: rotate(180deg); }
+
+.steps { margin: 0; padding: 4px 0; list-style: none; }
+.step { display: grid; grid-template-columns: 26px 1fr; gap: 12px; padding: 7px 18px; }
+/* Locked steps stay readable (AA contrast); the disabled controls show they are not ready. */
+.step[data-state="locked"] .step-title { color: var(--muted); }
+
+.step-num {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 2px solid var(--rule-strong);
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 700;
+}
+.step[data-state="active"] .step-num { border-color: var(--ink); color: var(--ink); }
+.step[data-state="done"] .step-num { border-color: var(--go); background: var(--go); color: #ffffff; }
+
+.step-title { margin: 1px 0 4px; font-size: 16px; font-weight: 700; }
+
+.check { display: grid; grid-template-columns: 20px 1fr; gap: 10px; color: var(--muted); font-size: 15px; line-height: 1.4; cursor: pointer; }
+.check input { width: 20px; height: 20px; margin: 1px 0 0; accent-color: var(--stop); }
+
+.cooldown { display: grid; gap: 2px; margin-bottom: 6px; }
+.cooldown-track { height: 6px; border-radius: 3px; background: var(--rule); overflow: hidden; }
+.cooldown-fill { width: 0; height: 100%; background: var(--ink); }
+.cooldown-text { color: var(--muted); font-size: 14px; }
+.step[data-state="done"] .cooldown-fill { background: var(--go); }
+
+.field-label { display: block; margin-bottom: 2px; color: var(--muted); font-size: 15px; line-height: 1.4; }
+.expected { margin-bottom: 6px; font-family: var(--mono); font-size: 15px; font-weight: 700; overflow-wrap: anywhere; }
+
+#confirm-host {
+  width: 100%;
+  height: 42px;
+  padding: 0 10px;
+  border: 2px solid var(--rule-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 16px;
+}
+#confirm-host:disabled { background: var(--page); cursor: not-allowed; }
+#confirm-host[data-match="yes"] { border-color: var(--go); }
+#confirm-host[data-match="no"] { border-color: var(--stop); }
+.field-hint { margin-top: 2px; color: var(--muted); font-size: 14px; }
+
+.danger {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 2px solid var(--stop);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--stop);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.danger:hover:not(:disabled) { background: var(--stop-tint); }
+.danger:disabled { border-color: var(--rule-strong); color: var(--muted); cursor: not-allowed; }
+
+/* ------------------------------------------------------------ responsive */
+
+@media (max-width: 1020px) {
+  .grid { grid-template-columns: 1fr; gap: 24px; }
+  .address-text { font-size: clamp(24px, calc((100vw - 64px) / (var(--chars, 24) * 0.68)), 56px); }
+  .band-body { grid-template-columns: auto 1fr; }
+  .band-cta { grid-column: 1 / -1; justify-items: stretch; }
+}
+
+@media (max-width: 720px) {
+  .risks { grid-template-columns: 1fr; gap: 14px; }
+  .risk, .risk:first-child { padding: 0; }
+  .risk + .risk { border-left: 0; padding-top: 14px; border-top: 1px solid var(--rule); }
+}
+
+@media (max-width: 560px) {
+  .band-inner, .wrap { padding-left: 16px; padding-right: 16px; }
+  .band-icon { width: 40px; height: 40px; }
+  h1 { font-size: 28px; }
+  .address-text { font-size: clamp(20px, calc((100vw - 32px) / (var(--chars, 24) * 0.68)), 40px); }
+  .finding { grid-template-columns: 1fr; }
+  .finding-detail { grid-column: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chev { transition: none; }
+}

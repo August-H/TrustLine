@@ -1,0 +1,18 @@
+/* Atkinson Hyperlegible (Braille Institute), bundled so blocked pages make no
+   third-party requests. Variable weight; see OFL.txt. */
+
+@font-face {
+  font-family: "Atkinson Hyperlegible Next";
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url("atkinson-hyperlegible-next.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Atkinson Hyperlegible Mono";
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url("atkinson-hyperlegible-mono.woff2") format("woff2");
+}

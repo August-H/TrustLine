@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TrustLine blocked a site</title>
+    <link rel="stylesheet" href="fonts/fonts.css" />
+    <link rel="stylesheet" href="warning.css" />
+  </head>
+  <body data-status="dangerous">
+    <header class="band">
+      <div class="band-inner">
+        <p class="brand">
+          <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2 4 5v6c0 5.1 3.4 9.4 8 11 4.6-1.6 8-5.9 8-11V5l-8-3Z" />
+          </svg>
+          TrustLine
+        </p>
+
+        <div class="band-body">
+          <svg class="band-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M8.2 2h7.6L22 8.2v7.6L15.8 22H8.2L2 15.8V8.2Z" />
+            <path d="M12 7v6M12 16.5v.01" />
+          </svg>
+          <div class="band-text">
+            <h1 id="title">This site may be dangerous</h1>
+            <p class="lead" id="lead">TrustLine stopped it before it opened. It looks like a scam or fake website.</p>
+          </div>
+          <div class="band-cta">
+            <button type="button" class="go-back" id="back">Take me back to safety</button>
+            <p class="cta-note">Nothing from this site has been loaded.</p>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <div class="grid">
+        <div class="col-main">
+          <section class="address" aria-labelledby="address-label">
+            <p class="address-label" id="address-label">You were about to visit</p>
+            <p class="address-text" id="domain">unknown site</p>
+            <ul class="address-notes" id="address-notes"></ul>
+          </section>
+
+          <section class="why" aria-labelledby="why-title">
+            <h2 id="why-title">Why TrustLine stopped it</h2>
+            <ol class="findings" id="findings"></ol>
+            <button type="button" class="more" id="findings-more" hidden></button>
+          </section>
+
+          <section class="risks-section" aria-labelledby="risks-title">
+            <h2 id="risks-title">What could happen if you continue</h2>
+            <ul class="risks" id="risks"></ul>
+          </section>
+        </div>
+
+        <aside class="col-side">
+          <details class="override" id="override">
+            <summary>
+              <span>
+                <span class="override-title">Think this is a mistake?</span>
+                <span class="override-sub">Three steps to open it anyway</span>
+              </span>
+              <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+            </summary>
+
+            <ol class="steps">
+              <li class="step" id="step-ack" data-state="active">
+                <span class="step-num" aria-hidden="true">1</span>
+                <div class="step-body">
+                  <p class="step-title">Acknowledge the risks</p>
+                  <label class="check">
+                    <input type="checkbox" id="ack" />
+                    <span>I have read the security analysis above and understand that proceeding exposes my data and device to potential compromise.</span>
+                  </label>
+                </div>
+              </li>
+
+              <li class="step" id="step-verify" data-state="locked">
+                <span class="step-num" aria-hidden="true">2</span>
+                <div class="step-body">
+                  <p class="step-title">Wait, then verify the address</p>
+                  <div class="cooldown" aria-live="polite">
+                    <div class="cooldown-track"><div class="cooldown-fill" id="cooldown-fill"></div></div>
+                    <span class="cooldown-text" id="cooldown-text">Cooldown starts after step 1</span>
+                  </div>
+                  <label class="field-label" for="confirm-host">
+                    Type the flagged hostname exactly. Check every character for look-alike tricks.
+                  </label>
+                  <p class="expected" id="expected-host"></p>
+                  <input
+                    type="text"
+                    id="confirm-host"
+                    class="mono"
+                    autocomplete="off"
+                    autocapitalize="off"
+                    autocorrect="off"
+                    spellcheck="false"
+                    disabled
+                  />
+                  <p class="field-hint" id="confirm-hint">Pasting is disabled. Type it out by hand.</p>
+                </div>
+              </li>
+
+              <li class="step" id="step-proceed" data-state="locked">
+                <span class="step-num" aria-hidden="true">3</span>
+                <div class="step-body">
+                  <p class="step-title">Proceed at your own risk</p>
+                  <button type="button" class="danger" id="proceed" disabled>Allowlist for this session &amp; Proceed</button>
+                </div>
+              </li>
+            </ol>
+          </details>
+        </aside>
+      </div>
+    </main>
+    <script src="warning.js"></script>
+  </body>
+</html>
