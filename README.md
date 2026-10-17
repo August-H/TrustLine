@@ -5,6 +5,7 @@ an approved-site database before asking TypeSafe's Jev model about URL metadata.
 Suspicious pages redirect to a proxy-owned `https://blocked.example.com/` page.
 Other unapproved pages stay blocked while GPT-6.1 Sol reviews them in a
 Cloudflare-hosted browser using authorized ChatGPT subscription access.
+Successful page reviews are cached in SQLite for 24 hours and survive restarts.
 
 ```text
 apps/

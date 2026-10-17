@@ -166,12 +166,14 @@ against every browser exploit or DNS rebinding scenario.
 The worker permits at most six model actions and 90 seconds including queue time,
 with one review running and at most eight pending. Remote sessions close in a
 `finally` block and also have a short Cloudflare keep-alive timeout. Model input,
-screenshots, and verdicts are not saved to disk by TrustLine. Model/provider data
-handling still follows their respective terms.
+screenshots, reasons, and evidence remain in memory. Successful page approvals
+are saved in SQLite as described below. Model/provider data handling still
+follows their respective terms.
 
-On approval, the browser returns to the checked page. Permissions last at most
-120 seconds from job creation and apply to that exact page URL plus its
-first-party assets. Another page or iframe needs its own review. Third-party
+On approval, the browser returns to the checked page. The checking-page token
+lasts at most 120 seconds from job creation. A successful page approval lasts
+24 hours and applies to that exact page URL plus its first-party assets.
+Another page or iframe needs its own review. Third-party
 assets remain independently checked and may be blocked, so some sites will not
 function fully. An incomplete remote render cannot receive an automatic pass.
 Scam pages can also show different content to cloud browsers, so the verdict is
@@ -198,9 +200,31 @@ suffixes bypass cloud inspection for local network compatibility.
 ```
 
 Changes affect new requests and new TLS connections. Existing approved tunnels
-remain encrypted until the browser reconnects. The SQLite database stores only
-approved domains, and revocations survive restart. This implementation keeps the
-existing seed list; it does not automatically trust 200 popularity-ranked domains.
+remain encrypted until the browser reconnects. Domain revocations survive restart.
+This implementation keeps the existing seed list; it does not automatically trust
+200 popularity-ranked domains.
+
+## Save successful page scans
+
+Successful cloud reviews automatically add a row to `scanned_pages` in the same
+`approved.sqlite3` database. The default path is
+`~/Library/Application Support/TrustLine/approved.sqlite3`. Returning to the same
+page skips JEV and Cloudflare for 24 hours, including after the daemon restarts.
+Expired approvals require another scan. Failed, blocked, inconclusive, or
+privacy-limited reviews never earn an approval. A successful API call alone does
+not qualify; the final review verdict must be `allow`.
+
+Each row stores a SHA-256 hash of the normalized page URL, its origin and hostname,
+the approval/expiry times, and a review-policy version. Full paths, query tokens,
+page contents, screenshots, and model explanations are not stored in SQLite.
+The cache retains at most 10,000 approvals. It remains separate from
+`approved_sites`, which grants an intentional, permanent domain bypass.
+Previously scanned pages still use TLS interception to match the exact URL.
+
+`revoke DOMAIN` also clears scanned-page approvals for that domain and its
+subdomains. Running `review URL` forces a fresh remote check and invalidates the
+previous approval before scanning. A subsequent failed or blocked scan cannot
+reuse the old approval. Database failures keep the page blocked.
 
 ## Run at login
 
@@ -244,6 +268,23 @@ apps/macos-daemon/.venv/bin/python apps/macos-daemon/scripts/check_live_jev.py
 It writes an ignored report under `apps/macos-daemon/build`. This diagnostic
 checks JEV integration rather than the full cloud review workflow. A live remote
 review additionally requires completing ChatGPT sign-in and configuring Cloudflare.
+
+To exercise the three routes with live services and a controlled scam fixture:
+
+```sh
+apps/macos-daemon/.venv/bin/python apps/macos-daemon/scripts/check_live_flow.py --include-scam-fixture
+```
+
+This uses synthetic proxy flow objects, live JEV and GPT-6.1 requests, and two
+Cloudflare browser sessions. It does not change browser settings or load a
+suspicious website locally. The second cloud session renders a synthetic scam
+page with JavaScript-generated content, rather than visiting a live scam site.
+It writes `apps/macos-daemon/build/live-flow-report.json` and uses the default
+ChatGPT state directory. Allow time between fresh sessions on the free plan.
+The service retries a Cloudflare `429` acquisition once after at least 20 seconds,
+respecting a numeric `Retry-After` up to 30 seconds, within the review's overall
+time budget. Longer limits, repeated failures, and authorization errors leave the
+site blocked.
 
 After configuration, test a single public page without sending Chrome traffic:
 

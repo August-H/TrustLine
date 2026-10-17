@@ -24,6 +24,7 @@ from trustline.inspection import ApprovedSites, Inspector, JevClient
 from trustline.proxy import InspectionProxy, REDIRECT_URL
 from trustline.remote import CloudflareBrowser, RemoteReviewer
 from trustline.reviews import ReviewManager
+from trustline.approvals import ReviewedPages
 
 
 def flow(url):
@@ -91,7 +92,8 @@ async def main(include_fixture):
     }
     with tempfile.TemporaryDirectory(prefix="trustline-live-") as directory:
         addon = InspectionProxy(Inspector(ApprovedSites(Path(directory) / "approved.sqlite3"), jev,
-            threshold=0.9, emit=lambda message, **kwargs: messages.append(message)), ReviewManager(reviewer))
+            threshold=0.9, emit=lambda message, **kwargs: messages.append(message)),
+            ReviewManager(reviewer, approvals=ReviewedPages(Path(directory) / "approved.sqlite3")))
         try:
             for url in ["https://www.youtube.com/", "https://www.linkedin.com/"]:
                 item = flow(url)
@@ -131,6 +133,8 @@ async def main(include_fixture):
                 resumed = flow(unknown.request.pretty_url)
                 await addon.requestheaders(resumed)
                 report["checks"]["approved_page_can_continue"] = resumed.response is None
+                restarted = ReviewManager(approvals=ReviewedPages(Path(directory) / "approved.sqlite3"))
+                report["checks"]["approval_survives_restart"] = restarted.allowed(unknown.request.pretty_url, "main_frame", "GET")
             if include_fixture:
                 # Workers Free permits a new browser instance once per 20s.
                 # Waiting with no browser open consumes no browser minutes.

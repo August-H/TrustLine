@@ -17,6 +17,7 @@ from mitmproxy.tools.dump import DumpMaster
 from .inspection import Inspector, is_local_host, normalize_host
 from .pages import redirect, response_page
 from .reviews import ReviewManager
+from .approvals import ReviewedPages
 
 REDIRECT_URL = "https://blocked.example.com/"
 REDIRECT_HOST = "blocked.example.com"
@@ -46,7 +47,7 @@ def request_kind(request: http.Request) -> str:
 class InspectionProxy:
     def __init__(self, inspector: Inspector, reviews=None):
         self.inspector = inspector
-        self.reviews = reviews if reviews is not None else ReviewManager()
+        self.reviews = reviews if reviews is not None else ReviewManager(approvals=ReviewedPages(inspector.sites.path))
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.pending = 0
 
@@ -150,7 +151,7 @@ class InspectionProxy:
                         "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
                     })
                     return
-                if row and action == "continue" and row.status == "allow":
+                if row and action == "continue" and row.status == "allow" and self.reviews.allowed(row.url, "main_frame", "GET"):
                     flow.response = redirect(row.url)
                     return
             flow.response = response_page("Website remains blocked", "This check is unavailable or expired.", status=404)
@@ -190,7 +191,7 @@ async def run_proxy(state_dir: Path, inspector: Inspector, port: int = 8899, ext
         master = DumpMaster(opts, with_termlog=False, with_dumper=False)
         master.options.update(connection_strategy="lazy", upstream_cert=False,
                               ssl_insecure=False, http2=True)
-        addon = InspectionProxy(inspector, ReviewManager(reviewer))
+        addon = InspectionProxy(inspector, ReviewManager(reviewer, approvals=ReviewedPages(inspector.sites.path)))
         master.addons.add(addon, *extra_addons)
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):

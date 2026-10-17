@@ -1,8 +1,10 @@
 import asyncio
+import io
 from pathlib import Path
 import sys
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
+from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -156,6 +158,33 @@ class RemoteReviewerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.call_args_list[-1].kwargs["method"], "DELETE")
         connected.close.assert_awaited_once()
         runtime.stop.assert_awaited_once()
+
+    async def test_cloudflare_rate_limit_waits_without_launching_and_retries_only_once(self):
+        browser = CloudflareBrowser("a" * 32, "synthetic-token")
+        error = HTTPError("https://api.cloudflare.com/", 429, "rate limited", {"Retry-After": "23"}, io.BytesIO())
+        with patch("trustline.remote.request_json", side_effect=[error, {"sessionId": "fixture"}]) as acquire, \
+                patch("trustline.remote.asyncio.sleep", new_callable=AsyncMock) as wait:
+            result = await browser.acquire_session("ordinary.example")
+        self.assertEqual(result["sessionId"], "fixture")
+        self.assertEqual(acquire.call_count, 2)
+        wait.assert_awaited_once_with(23)
+        self.assertIsNone(browser.playwright)
+        self.assertIsNone(browser.browser)
+        for status, retry_after in [(429, "3600"), (403, "20"), (401, "20")]:
+            error = HTTPError("https://api.cloudflare.com/", status, "unavailable", {"Retry-After": retry_after}, io.BytesIO())
+            with patch("trustline.remote.request_json", side_effect=error) as acquire, \
+                    patch("trustline.remote.asyncio.sleep", new_callable=AsyncMock) as wait:
+                with self.assertRaises(RemoteError):
+                    await browser.acquire_session("ordinary.example")
+                acquire.assert_called_once()
+                wait.assert_not_awaited()
+        errors = [HTTPError("https://api.cloudflare.com/", 429, "rate limited", {}, io.BytesIO()) for _ in range(2)]
+        with patch("trustline.remote.request_json", side_effect=errors) as acquire, \
+                patch("trustline.remote.asyncio.sleep", new_callable=AsyncMock) as wait:
+            with self.assertRaises(RemoteError):
+                await browser.acquire_session("ordinary.example")
+            self.assertEqual(acquire.call_count, 2)
+            wait.assert_awaited_once_with(20)
 
 
 if __name__ == "__main__":

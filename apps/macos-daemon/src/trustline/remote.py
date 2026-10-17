@@ -3,9 +3,11 @@
 import asyncio
 import base64
 import ipaddress
+import math
 import re
 import socket
 from urllib.parse import urlsplit
+from urllib.error import HTTPError
 
 from .inspection import is_local_host, normalize_origin
 from .reviews import review_url
@@ -58,9 +60,7 @@ class CloudflareBrowser:
         self.initial_origin, host = normalize_origin(target)
         if not await self.check_public_host(host):
             raise RemoteError("The destination does not resolve to public addresses")
-        result = await asyncio.to_thread(request_json, self.base + "?keep_alive=60000", method="POST",
-            token=self.token, data={"guardrails": {"allowedDomains": [host, "*." + host],
-                                                  "allowedDomainSets": ["common-cdns"]}})
+        result = await self.acquire_session(host)
         session_id = result.get("sessionId", "")
         if not re.fullmatch(r"[a-fA-F0-9-]{20,64}", session_id):
             raise RemoteError("Cloudflare did not create a browser session")
@@ -85,6 +85,25 @@ class CloudflareBrowser:
         self.http_status = response.status if response else None
         if response and response.headers.get("cf-mitigated") == "guardrails":
             self.blocked.append("Cloudflare blocked a required navigation")
+
+    async def acquire_session(self, host):
+        # The free plan allows one new instance per 20 seconds. Retry once,
+        # without a browser running, within the caller's overall review budget.
+        for attempt in range(2):
+            try:
+                return await asyncio.to_thread(request_json, self.base + "?keep_alive=60000", method="POST",
+                    token=self.token, data={"guardrails": {"allowedDomains": [host, "*." + host],
+                                                          "allowedDomainSets": ["common-cdns"]}})
+            except HTTPError as error:
+                status = error.code
+                try:
+                    delay = float((error.headers or {}).get("Retry-After", "20"))
+                except (ValueError, TypeError):
+                    delay = 20
+                error.close()
+                if status != 429 or attempt or not math.isfinite(delay) or delay > 30:
+                    raise RemoteError("Cloudflare browser acquisition is unavailable") from None
+                await asyncio.sleep(max(20, delay))
 
     async def close_popup(self, page):
         if page is not self.page:

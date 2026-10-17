@@ -101,12 +101,14 @@ def main():
             from .chatgpt import ChatGPTAccount, ChatGPTPlanClient
             from .remote import CloudflareBrowser, RemoteReviewer
             from .reviews import ReviewManager
+            from .approvals import ReviewedPages
             account = ChatGPTAccount(args.state_dir)
             account_id, token = setting("CLOUDFLARE_ACCOUNT_ID"), setting("CLOUDFLARE_API_TOKEN")
             if not account.status()["using_chatgpt_plan"] or not account_id or not token:
                 raise ValueError("Complete chatgpt-login and configure Cloudflare before running review")
             async def run_review():
-                manager = ReviewManager(RemoteReviewer(ChatGPTPlanClient(account), lambda: CloudflareBrowser(account_id, token)))
+                manager = ReviewManager(RemoteReviewer(ChatGPTPlanClient(account), lambda: CloudflareBrowser(account_id, token)),
+                                        approvals=ReviewedPages(args.state_dir / "approved.sqlite3"))
                 try:
                     row = manager.start(args.url)
                     if row.task:
@@ -147,6 +149,8 @@ def main():
             sites.add(args.domain)
         elif args.command == "revoke":
             sites.remove(args.domain)
+            from .approvals import ReviewedPages
+            ReviewedPages(sites.path).clear_domain(args.domain)
     except (ValueError, OSError) as error:
         # ValueError messages are deliberately fixed strings from our validation code.
         message = str(error) if isinstance(error, ValueError) else "Local service operation failed"
