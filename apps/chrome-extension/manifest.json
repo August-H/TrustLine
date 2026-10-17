@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "TrustLine",
+  "short_name": "TrustLine",
+  "version": "0.1.0",
+  "description": "See how trustworthy a website is, powered by the TrustLine macOS daemon.",
+  "minimum_chrome_version": "116",
+  "action": {
+    "default_title": "TrustLine",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["tabs", "storage"],
+  "host_permissions": [
+    "http://127.0.0.1:8765/*",
+    "http://localhost:8765/*"
+  ]
+}
