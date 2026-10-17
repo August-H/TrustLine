@@ -53,17 +53,41 @@
             <h2 id="risks-title">What could happen if you continue</h2>
             <ul class="risks" id="risks"></ul>
           </section>
+
+          <section class="score" id="score" aria-labelledby="score-title">
+            <div class="score-head">
+              <h2 id="score-title">TrustLine Safety Score</h2>
+              <p class="score-value"><strong id="score-value">--</strong> / 100</p>
+            </div>
+            <div
+              class="score-track"
+              id="score-meter"
+              role="meter"
+              aria-labelledby="score-title"
+              aria-valuemin="0"
+              aria-valuemax="100"
+            >
+              <span class="zone" data-zone="dangerous"></span>
+              <span class="zone" data-zone="suspicious"></span>
+              <span class="zone" data-zone="safe"></span>
+              <span class="score-fill" id="score-fill"></span>
+              <span class="score-marker" id="score-marker"></span>
+            </div>
+            <div class="score-scale" aria-hidden="true">
+              <span data-zone="dangerous">Dangerous</span>
+              <span data-zone="suspicious">Suspicious</span>
+              <span data-zone="safe">Safe</span>
+            </div>
+            <p class="score-note" id="score-note"></p>
+          </section>
         </div>
 
         <aside class="col-side">
-          <details class="override" id="override">
-            <summary>
-              <span>
-                <span class="override-title">Think this is a mistake?</span>
-                <span class="override-sub">Three steps to open it anyway</span>
-              </span>
-              <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
-            </summary>
+          <section class="override" id="override" aria-labelledby="override-title">
+            <header class="override-head">
+              <h2 class="override-title" id="override-title">Think this is a mistake?</h2>
+              <p class="override-sub">Three steps to open it anyway</p>
+            </header>
 
             <ol class="steps">
               <li class="step" id="step-ack" data-state="active">
@@ -111,7 +135,7 @@
                 </div>
               </li>
             </ol>
-          </details>
+          </section>
         </aside>
       </div>
     </main>

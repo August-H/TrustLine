@@ -63,14 +63,14 @@ button { font: inherit; cursor: pointer; }
 .band-inner {
   max-width: 1220px;
   margin: 0 auto;
-  padding: 10px 32px 16px;
+  padding: 8px 32px 14px;
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
   font-size: 16px;
   font-weight: 700;
 }
@@ -80,7 +80,7 @@ button { font: inherit; cursor: pointer; }
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
-  gap: 20px;
+  gap: 22px;
 }
 
 .band-icon {
@@ -94,7 +94,8 @@ button { font: inherit; cursor: pointer; }
 }
 
 h1 { font-size: 36px; font-weight: 800; line-height: 1.1; letter-spacing: -0.01em; }
-.lead { margin-top: 4px; font-size: 19px; }
+.lead { margin-top: 4px; font-size: 17px; }
+.lead strong { font-weight: 800; }
 
 .band-cta { display: grid; gap: 6px; justify-items: center; }
 
@@ -117,7 +118,7 @@ h1 { font-size: 36px; font-weight: 800; line-height: 1.1; letter-spacing: -0.01e
 .wrap {
   max-width: 1220px;
   margin: 0 auto;
-  padding: 0 32px 14px;
+  padding: 0 32px 12px;
 }
 
 .address {
@@ -131,7 +132,7 @@ h1 { font-size: 36px; font-weight: 800; line-height: 1.1; letter-spacing: -0.01e
 .address-text {
   margin-top: 2px;
   font-family: var(--mono);
-  font-size: clamp(24px, calc((min(100vw, 1220px) - 64px - 396px) / (var(--chars, 24) * 0.68)), 56px);
+  font-size: clamp(24px, calc((min(100vw, 1220px) - 64px - 386px) / (var(--chars, 24) * 0.68)), 56px);
   font-weight: 700;
   line-height: 1.2;
   overflow-wrap: anywhere;
@@ -174,19 +175,18 @@ h1 { font-size: 36px; font-weight: 800; line-height: 1.1; letter-spacing: -0.01e
 }
 .address-notes code { font-family: var(--mono); font-weight: 700; }
 
-.lead strong { font-weight: 800; }
 
 /* ------------------------------------------------------------------ grid */
 
 .grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr) 350px;
   gap: 36px;
   margin-top: 14px;
   align-items: start;
 }
 
-.col-main { display: grid; gap: 16px; min-width: 0; }
+.col-main { display: grid; gap: 14px; min-width: 0; }
 
 h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
 
@@ -208,7 +208,7 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
 .tag[data-tag="heuristic"], .tag[data-tag="network"] { color: var(--caution); }
 
 .finding-title { font-weight: 700; }
-.finding-detail { grid-column: 2; color: var(--muted); font-size: 16px; }
+.finding-detail { grid-column: 2; color: var(--muted); font-size: 15px; }
 
 .more {
   margin-top: 2px;
@@ -248,7 +248,67 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
   stroke-linejoin: round;
 }
 .risk h3 { font-size: 17px; font-weight: 800; line-height: 1.25; }
-.risk p { color: var(--muted); font-size: 16px; }
+.risk p { color: var(--muted); font-size: 15px; line-height: 1.4; }
+
+/* ----------------------------------------------------------------- score */
+
+.score { padding-top: 10px; border-top: 2px solid var(--ink); }
+.score[hidden] { display: none; }
+
+.score-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.score-value { color: var(--muted); font-size: 17px; font-variant-numeric: tabular-nums; }
+.score-value strong { color: var(--signal); font-size: 24px; font-weight: 800; }
+
+/* Three zones on a 0-100 scale; widths mirror the 40 / 70 thresholds. */
+.score-track {
+  position: relative;
+  display: grid;
+  grid-template-columns: 40fr 30fr 30fr;
+  gap: 3px;
+  height: 14px;
+  margin-top: 4px;
+}
+.zone { border-radius: 3px; }
+.zone[data-zone="dangerous"] { background: var(--stop-tint); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--stop) 35%, transparent); }
+.zone[data-zone="suspicious"] { background: var(--caution-tint); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--caution) 30%, transparent); }
+.zone[data-zone="safe"] { background: #e3f1ea; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--go) 30%, transparent); }
+
+/* Proportional fill from 0 to the score, coloured by the zone it lands in. */
+.score-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  border-radius: 3px;
+  background: var(--stop);
+}
+.score-track[data-zone="suspicious"] .score-fill { background: var(--caution); }
+.score-track[data-zone="safe"] .score-fill { background: var(--go); }
+
+/* Where this site landed. */
+.score-marker {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  width: 6px;
+  margin-left: -3px;
+  border: 2px solid var(--surface);
+  border-radius: 3px;
+  background: var(--ink);
+}
+
+.score-scale {
+  display: grid;
+  grid-template-columns: 40fr 30fr 30fr;
+  gap: 3px;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.score-scale span { padding-left: 2px; }
+
+.score-note { margin-top: 2px; color: var(--muted); font-size: 15px; }
 
 /* -------------------------------------------------------------- override */
 
@@ -258,22 +318,12 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
   background: var(--surface);
 }
 
-.override summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 18px;
-  border-radius: 6px;
-  cursor: pointer;
-  list-style: none;
+.override-head {
+  padding: 12px 18px 10px;
+  border-bottom: 1px solid var(--rule);
 }
-.override summary::-webkit-details-marker { display: none; }
-.override[open] summary { border-bottom: 1px solid var(--rule); border-radius: 6px 6px 0 0; }
-.override-title { display: block; font-size: 18px; font-weight: 800; }
-.override-sub { display: block; color: var(--muted); font-size: 15px; }
-.chev { width: 22px; height: 22px; fill: none; stroke: var(--ink); stroke-width: 2; transition: transform 150ms; }
-.override[open] .chev { transform: rotate(180deg); }
+.override-title { font-size: 18px; font-weight: 800; }
+.override-sub { color: var(--muted); font-size: 15px; }
 
 .steps { margin: 0; padding: 4px 0; list-style: none; }
 .step { display: grid; grid-template-columns: 26px 1fr; gap: 12px; padding: 7px 18px; }
@@ -356,13 +406,10 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
 
 @media (max-width: 560px) {
   .band-inner, .wrap { padding-left: 16px; padding-right: 16px; }
-  .band-icon { width: 40px; height: 40px; }
-  h1 { font-size: 28px; }
+  .band-icon { width: 44px; height: 44px; }
+  h1 { font-size: 30px; }
   .address-text { font-size: clamp(20px, calc((100vw - 32px) / (var(--chars, 24) * 0.68)), 40px); }
   .finding { grid-template-columns: 1fr; }
   .finding-detail { grid-column: 1; }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .chev { transition: none; }
-}
