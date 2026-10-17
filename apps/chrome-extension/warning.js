@@ -212,7 +212,7 @@ function buildFindings() {
 
 // Show the most important reasons first; the rest sit behind a button so the
 // page still fits on one screen.
-const VISIBLE_FINDINGS = 3;
+const VISIBLE_FINDINGS = 2;
 
 const RISKS = [
   {
@@ -240,16 +240,28 @@ function renderHeader() {
   document.body.dataset.status = verdict;
   document.title = domain ? `TrustLine ${paused ? "paused" : "blocked"} ${domain}` : "TrustLine blocked a site";
   document.getElementById("title").textContent = paused ? "This site looks suspicious" : "This site may be dangerous";
-  const lead = document.getElementById("lead");
-  lead.replaceChildren(
-    paused ? "TrustLine paused it before it opened. " : "TrustLine stopped it before it opened. "
-  );
+}
+
+// Zones match the verdict thresholds in background.js: under 40 dangerous, under 70 suspicious.
+function renderScore() {
+  const section = document.getElementById("score");
   if (score === null) {
-    lead.append(paused ? "Some things about it look like a scam." : "It looks like a scam or fake website.");
-  } else {
-    const rating = score < 40 ? ", which is very low" : score < 70 ? ", which is low" : "";
-    lead.append("Its safety score is ", el("strong", { text: `${score} out of 100` }), `${rating}.`);
+    section.hidden = true;
+    return;
   }
+  const zone = score < 40 ? "dangerous" : score < 70 ? "suspicious" : "safe";
+  document.getElementById("score-value").textContent = String(score);
+  const meter = document.getElementById("score-meter");
+  meter.setAttribute("aria-valuenow", String(score));
+  meter.setAttribute("aria-valuetext", `${score} out of 100, ${zone}`);
+  meter.dataset.zone = zone;
+  document.getElementById("score-marker").style.left = `${score}%`;
+  document.getElementById("score-fill").style.width = `${score}%`;
+  document.getElementById("score-note").textContent = {
+    dangerous: "Under 40 means strong signs of a scam. Most safe sites score above 70.",
+    suspicious: "40 to 69 means some things look wrong. Most safe sites score above 70.",
+    safe: "Most safe sites score above 70, but TrustLine found something worth checking.",
+  }[zone];
 }
 
 /* --------------------------------------------------------------- address */
@@ -489,6 +501,7 @@ proceed.addEventListener("click", async () => {
 
 const findings = buildFindings();
 renderHeader();
+renderScore();
 renderAddress();
 renderFindings(findings);
 renderRisks();
