@@ -240,6 +240,16 @@ function renderHeader() {
   document.body.dataset.status = verdict;
   document.title = domain ? `TrustLine ${paused ? "paused" : "blocked"} ${domain}` : "TrustLine blocked a site";
   document.getElementById("title").textContent = paused ? "This site looks suspicious" : "This site may be dangerous";
+  const lead = document.getElementById("lead");
+  lead.replaceChildren(
+    paused ? "TrustLine flagged this website for caution. " : "TrustLine flagged this website as dangerous. "
+  );
+  if (score === null) {
+    lead.append(paused ? "Some things about it look like a scam." : "It looks like a scam or fake website.");
+  } else {
+    const rating = score < 40 ? ", which is very low" : score < 70 ? ", which is low" : "";
+    lead.append("Its safety score is ", el("strong", { text: `${score} out of 100` }), `${rating}.`);
+  }
 }
 
 // Zones match the verdict thresholds in background.js: under 40 dangerous, under 70 suspicious.

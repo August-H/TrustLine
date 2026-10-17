@@ -84,8 +84,8 @@ button { font: inherit; cursor: pointer; }
 }
 
 .band-icon {
-  width: 68px;
-  height: 68px;
+  width: 56px;
+  height: 56px;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.8;
@@ -93,7 +93,11 @@ button { font: inherit; cursor: pointer; }
   stroke-linecap: round;
 }
 
-h1 { font-size: 46px; font-weight: 800; line-height: 1.05; letter-spacing: -0.015em; }
+h1 { font-size: 36px; font-weight: 800; line-height: 1.1; letter-spacing: -0.01em; }
+.lead { margin-top: 4px; font-size: 17px; }
+.lead strong { font-weight: 800; }
+
+.band-cta { display: grid; gap: 6px; justify-items: center; }
 
 .go-back {
   min-height: 56px;
@@ -107,13 +111,14 @@ h1 { font-size: 46px; font-weight: 800; line-height: 1.05; letter-spacing: -0.01
 }
 .go-back:hover { background: var(--go-hover); }
 .go-back:focus-visible { outline-color: #ffffff; }
+.cta-note { font-size: 15px; }
 
 /* --------------------------------------------------------------- address */
 
 .wrap {
   max-width: 1220px;
   margin: 0 auto;
-  padding: 0 32px 14px;
+  padding: 0 32px 12px;
 }
 
 .address {
@@ -390,7 +395,7 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
   .grid { grid-template-columns: 1fr; gap: 24px; }
   .address-text { font-size: clamp(24px, calc((100vw - 64px) / (var(--chars, 24) * 0.68)), 56px); }
   .band-body { grid-template-columns: auto 1fr; }
-  .go-back { grid-column: 1 / -1; }
+  .band-cta { grid-column: 1 / -1; justify-items: stretch; }
 }
 
 @media (max-width: 720px) {

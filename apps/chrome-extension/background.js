@@ -1,8 +1,8 @@
 /*
  * TrustLine service worker.
  *
- * Talks to the local macOS daemon over HTTP. When the daemon is unreachable it
- * falls back to a local heuristic "mock" analyzer so the UI stays usable.
+ * Talks to the local macOS daemon for verified-domain/Jev scores and
+ * Cloudflare Browser Run reviews. Missing results stay unscored.
  * See README.md for the daemon API contract.
  */
 
@@ -11,8 +11,8 @@ const CONFIG = {
   HEALTH_TIMEOUT_MS: 1500,
   HEALTH_CACHE_MS: 10_000,
   QUICK_SCAN_TIMEOUT_MS: 8_000,
-  DEEP_SCAN_TIMEOUT_MS: 90_000,
-  MOCK_DEEP_SCAN_DELAY_MS: 2_800,
+  DEEP_SCAN_TIMEOUT_MS: 110_000,
+  REVIEW_POLL_MS: 1_000,
   RESULT_TTL_MS: 5 * 60_000,
   // Set to the hosted warning landing page (e.g. "https://trustline.app/warning").
   // When empty, the bundled warning.html is used.
@@ -101,8 +101,9 @@ async function checkDaemon(force = false) {
 }
 
 function normalizeResult(raw, url, mode, source) {
-  let score = Number(raw?.score ?? raw?.trust_score ?? raw?.trustScore);
-  if (!Number.isFinite(score)) score = null;
+  const suppliedScore = raw?.score;
+  const score = typeof suppliedScore === "number" && Number.isFinite(suppliedScore)
+    ? clampScore(suppliedScore) : null;
 
   let verdict = String(raw?.verdict ?? raw?.status ?? "").toLowerCase();
   if (["blocked", "malicious", "danger", "unsafe"].includes(verdict)) verdict = "dangerous";
@@ -111,7 +112,6 @@ function normalizeResult(raw, url, mode, source) {
   if (!VERDICTS.includes(verdict)) {
     verdict = score === null ? "suspicious" : verdictFromScore(score);
   }
-  if (score === null) score = { safe: 85, suspicious: 55, dangerous: 15 }[verdict];
 
   const reasons = Array.isArray(raw?.reasons)
     ? raw.reasons.filter((r) => typeof r === "string" && r.trim()).slice(0, 6)
@@ -119,9 +119,15 @@ function normalizeResult(raw, url, mode, source) {
 
   return {
     url,
-    domain: hostnameOf(url),
+    domain: hostnameOf(raw?.target_url || url),
+    targetUrl: raw?.target_url || url,
+    schemaVersion: 2,
+    verified: raw?.verified === true,
+    scoreSource: raw?.score_source ?? null,
+    jevProbability: raw?.jev_probability ?? null,
+    review: raw?.review ?? null,
     verdict,
-    score: clampScore(score),
+    score,
     reasons,
     mode,
     source,
@@ -129,93 +135,41 @@ function normalizeResult(raw, url, mode, source) {
   };
 }
 
-/* ------------------------------------------------------------- mock mode */
-
-const RISKY_TLDS = new Set(["zip", "mov", "xyz", "top", "click", "gq", "tk", "ml", "cf", "work", "rest"]);
-const BAIT_KEYWORDS = /(login|log-in|signin|sign-in|verify|verification|secure|account|update|wallet|confirm|banking|support-|recover)/i;
-
-function hashString(s) {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return Math.abs(h);
-}
-
-function mockAnalyze(url, mode) {
-  const u = new URL(url);
-  const host = u.hostname.toLowerCase();
-  const isLoopback = host === "localhost" || host === "127.0.0.1" || host === "[::1]";
-  const reasons = [];
-  let score = 94 - (hashString(host) % 6);
-
-  if (!isLoopback) {
-    if (u.protocol === "http:") {
-      score -= 18;
-      reasons.push("Connection is not encrypted (HTTP)");
-    }
-    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
-      score -= 25;
-      reasons.push("Site is served from a raw IP address");
-    }
-    if (host.includes("xn--")) {
-      score -= 30;
-      reasons.push("Domain uses punycode, a common look-alike trick");
-    }
-    if (u.username || u.password) {
-      score -= 20;
-      reasons.push("URL embeds credentials before the hostname");
-    }
-    if (host.split(".").length > 4) {
-      score -= 12;
-      reasons.push("Unusually deep subdomain chain");
-    }
-    if (BAIT_KEYWORDS.test(host)) {
-      score -= 16;
-      reasons.push("Domain contains credential-bait keywords");
-    }
-    if ((host.match(/-/g) || []).length >= 3) {
-      score -= 10;
-      reasons.push("Domain contains many hyphens");
-    }
-    if (RISKY_TLDS.has(host.split(".").pop())) {
-      score -= 15;
-      reasons.push("Top-level domain is frequently associated with abuse");
-    }
-    if (host.length > 40) {
-      score -= 8;
-      reasons.push("Hostname is unusually long");
-    }
-  }
-
-  if (reasons.length === 0) reasons.push("No known risk signals detected");
-  if (mode === "deep") reasons.push("Page content reviewed by local mock analyzer");
-
-  return normalizeResult({ score, reasons }, url, mode, "mock");
-}
-
 /* --------------------------------------------------------------- analysis */
 
+async function daemonJson(path, options = {}, timeout = CONFIG.QUICK_SCAN_TIMEOUT_MS) {
+  const response = await fetchWithTimeout(`${CONFIG.DAEMON_BASE_URL}${path}`, options, timeout);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `Daemon responded with HTTP ${response.status}`);
+  return data;
+}
+
 async function analyzeUrl(url, mode) {
-  const daemon = await checkDaemon();
-  if (daemon.online) {
-    try {
-      const res = await fetchWithTimeout(
-        `${CONFIG.DAEMON_BASE_URL}/v1/analyze`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url, mode }),
-        },
-        mode === "deep" ? CONFIG.DEEP_SCAN_TIMEOUT_MS : CONFIG.QUICK_SCAN_TIMEOUT_MS
-      );
-      if (!res.ok) throw new Error(`Daemon responded with HTTP ${res.status}`);
-      return normalizeResult(await res.json(), url, mode, "daemon");
-    } catch (err) {
-      console.warn("[TrustLine] Daemon analysis failed, using mock analyzer:", err);
-      healthCache = { checkedAt: Date.now(), online: false, version: null };
+  try {
+    // Every explicit scan tries the daemon again, even after a cached health failure.
+    const raw = await daemonJson("/v1/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, mode }),
+    });
+    healthCache = { checkedAt: Date.now(), online: true, version: "0.2.0" };
+    const deadline = Date.now() + CONFIG.DEEP_SCAN_TIMEOUT_MS;
+    while (raw.review?.status === "pending") {
+      if (Date.now() >= deadline) throw new Error("Cloud review timed out. No approval was granted.");
+      await sleep(CONFIG.REVIEW_POLL_MS);
+      raw.review = { token: raw.review.token, ...await daemonJson(`/v1/reviews/${encodeURIComponent(raw.review.token)}`) };
     }
+    if (raw.review) {
+      raw.verdict = { allow: "safe", block: "dangerous" }[raw.review.status] ?? "suspicious";
+      raw.reasons = [raw.review.reason, ...(raw.review.evidence ?? [])];
+    }
+    return normalizeResult(raw, url, mode, "daemon");
+  } catch (err) {
+    healthCache = { checkedAt: Date.now(), online: false, version: null };
+    if (mode === "deep") throw new Error(`Cloud review unavailable: ${err.message}`);
+    return normalizeResult({ verdict: "suspicious", score: null,
+      reasons: ["Trust score unavailable. Start the TrustLine daemon and check its Jev configuration."] }, url, mode, "unavailable");
   }
-  if (mode === "deep") await sleep(CONFIG.MOCK_DEEP_SCAN_DELAY_MS);
-  return mockAnalyze(url, mode);
 }
 
 const inflight = new Map(); // tabId -> { url, mode, promise }
@@ -224,6 +178,11 @@ async function scanTab(tabId, url, mode = "quick") {
   const existing = inflight.get(tabId);
   if (existing && existing.url === url && (existing.mode === mode || existing.mode === "deep")) {
     return existing.promise;
+  }
+
+  if (existing && existing.url === url) {
+    await existing.promise;
+    return scanTab(tabId, url, mode);
   }
 
   const promise = (async () => {
@@ -235,11 +194,20 @@ async function scanTab(tabId, url, mode = "quick") {
       if (!tab || tab.url !== url) return result;
       await chrome.storage.session.set({ [resultKey(tabId)]: result });
       await applyActionState(tabId, result.verdict);
+      // A user may retry a previously inconclusive proxy check from the popup.
+      // Release that checking tab on approval even if its page stopped polling.
+      const current = new URL(url);
+      if (result.review?.status === "allow" && current.hostname === "blocked.example.com" &&
+          current.pathname.startsWith("/_trustline/check/") && result.targetUrl !== url) {
+        await chrome.tabs.update(tabId, { url: result.targetUrl });
+      }
       await maybeBlock(tabId, result);
       return result;
     } finally {
-      await chrome.storage.session.remove(scanKey(tabId));
-      if (inflight.get(tabId)?.promise === promise) inflight.delete(tabId);
+      if (inflight.get(tabId)?.promise === promise) {
+        inflight.delete(tabId);
+        await chrome.storage.session.remove(scanKey(tabId));
+      }
     }
   })();
 
@@ -259,7 +227,7 @@ function warningPageUrl(targetUrl, result, reason) {
   const page = new URL(base);
   page.searchParams.set("url", targetUrl);
   page.searchParams.set("verdict", result?.verdict ?? "dangerous");
-  if (result?.score !== undefined) page.searchParams.set("score", String(result.score));
+  if (typeof result?.score === "number") page.searchParams.set("score", String(result.score));
   page.searchParams.set("reason", reason ?? result?.reasons?.[0] ?? "This site was flagged by TrustLine");
   // Full context so the warning page can render an itemized threat breakdown.
   const reasons = [...(reason ? [reason] : []), ...(result?.reasons ?? [])];
@@ -275,7 +243,7 @@ async function maybeBlock(tabId, result) {
   if (!settings.autoScan || !settings.blockDangerous) return;
   const allowlist = await getAllowlist();
   if (allowlist.includes(result.domain)) return;
-  await chrome.tabs.update(tabId, { url: warningPageUrl(result.url, result) });
+  await chrome.tabs.update(tabId, { url: warningPageUrl(result.targetUrl || result.url, result) });
 }
 
 /* ------------------------------------------------------------ action icon */
@@ -344,7 +312,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (!settings.autoScan) return;
 
   const { [resultKey(tabId)]: cached } = await chrome.storage.session.get(resultKey(tabId));
-  if (cached && cached.url === tab.url && Date.now() - cached.scannedAt < CONFIG.RESULT_TTL_MS) {
+  if (cached?.schemaVersion === 2 && cached.url === tab.url && Date.now() - cached.scannedAt < CONFIG.RESULT_TTL_MS) {
     await applyActionState(tabId, cached.verdict);
     return;
   }
@@ -367,7 +335,7 @@ const handlers = {
     const daemon = await checkDaemon();
     return {
       tab: { url: tab.url ?? "", domain: hostnameOf(tab.url ?? ""), scannable: isScannableUrl(tab.url) },
-      result: result && result.url === tab.url ? result : null,
+      result: result?.schemaVersion === 2 && result.url === tab.url ? result : null,
       scanning: stored[scanKey(tabId)] ?? null,
       daemon: { online: daemon.online, version: daemon.version, baseUrl: CONFIG.DAEMON_BASE_URL },
       settings: await getSettings(),

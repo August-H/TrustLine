@@ -35,13 +35,6 @@ const DEMO_RESULTS = {
   },
 };
 
-const DEEP_SCAN_STEPS = [
-  "Fetching page content",
-  "Inspecting scripts and forms",
-  "Evaluating with TrustLine model",
-  "Compiling verdict",
-];
-
 const $ = (id) => document.getElementById(id);
 const el = {
   body: document.body,
@@ -51,6 +44,7 @@ const el = {
   verdict: $("verdict"),
   verdictMeta: $("verdictMeta"),
   scoreValue: $("scoreValue"),
+  scoreHelper: $("scoreHelper"),
   track: $("meterTrack"),
   fill: $("meterFill"),
   signals: $("signals"),
@@ -133,8 +127,8 @@ function render() {
     el.pill.title = `Connected to ${state.daemon.baseUrl}${state.daemon.version ? ` (v${state.daemon.version})` : ""}`;
   } else {
     el.pill.dataset.state = "mock";
-    el.pillLabel.textContent = "Mock mode";
-    el.pill.title = `Daemon unreachable at ${state.daemon.baseUrl}. Using local heuristics.`;
+    el.pillLabel.textContent = "Daemon offline";
+    el.pill.title = `Daemon unreachable at ${state.daemon.baseUrl}. No trust score is available.`;
   }
 
   // Status card
@@ -144,14 +138,14 @@ function render() {
     const [pre, post] = VERDICT_COPY[result.verdict];
     el.statusIcon.innerHTML = ICONS[result.verdict];
     setVerdictText(pre, result.domain, post);
-    const sourceLabel = { daemon: "TrustLine daemon", mock: "Mock analyzer", demo: "Demo preview" }[result.source] ?? "";
-    const modeLabel = result.mode === "deep" ? "Deep scan" : result.source === "demo" ? "" : "Quick scan";
+    const sourceLabel = result.verified ? "Verified database" : { daemon: "Jev URL score", unavailable: "Score unavailable", demo: "Demo preview" }[result.source] ?? "";
+    const modeLabel = result.review ? "Cloudflare deep scan" : result.source === "demo" ? "" : "Quick scan";
     const parts = [modeLabel, sourceLabel, result.scannedAt ? timeAgo(result.scannedAt) : ""].filter(Boolean);
     el.verdictMeta.textContent = parts.join(" · ");
   } else if (view.kind === "pending") {
     el.statusIcon.innerHTML = ICONS.pending;
     el.verdict.replaceChildren(document.createTextNode("Checking "), Object.assign(document.createElement("strong"), { textContent: state.tab.domain }), document.createTextNode("…"));
-    el.verdictMeta.textContent = "Running quick scan";
+    el.verdictMeta.textContent = view.scanning ? "Reviewing in Cloudflare Browser Run" : "Checking the verified database and Jev";
   } else {
     el.statusIcon.innerHTML = ICONS.idle;
     el.verdict.textContent = "TrustLine can't scan this page";
@@ -161,6 +155,9 @@ function render() {
   // Trust meter
   const score = view.kind === "result" ? view.result.score : null;
   el.scoreValue.textContent = score === null ? "--" : String(score);
+  el.scoreHelper.textContent = view.kind === "result" && view.result.source === "demo" ? "Demo score for preview only" :
+    view.kind === "result" && view.result.verified ? "100: domain in the verified database" :
+    score === null ? "No score available" : "Jev URL score: 100 × (1 − suspiciousness)";
   el.fill.style.width = `${score ?? 0}%`;
   el.track.setAttribute("aria-valuenow", String(score ?? 0));
 
@@ -178,8 +175,9 @@ function render() {
   el.scanLabel.textContent = scanning ? "Scanning…" : "Deep scan";
   setScanTicker(scanning);
   if (!scanning) {
-    el.scanStatus.textContent = state.error;
-    el.scanStatus.classList.toggle("is-error", Boolean(state.error));
+    const review = view.kind === "result" ? view.result.review : null;
+    el.scanStatus.textContent = state.error || (review?.status === "inconclusive" ? review.reason : "");
+    el.scanStatus.classList.toggle("is-error", Boolean(state.error || review?.status === "inconclusive"));
   }
 
   // Footer
@@ -198,9 +196,8 @@ function setScanTicker(active) {
     tickerStartedAt = Date.now();
     const tick = () => {
       const elapsed = (Date.now() - tickerStartedAt) / 1000;
-      const step = DEEP_SCAN_STEPS[Math.min(DEEP_SCAN_STEPS.length - 1, Math.floor(elapsed / 0.9))];
       el.scanStatus.classList.remove("is-error");
-      el.scanStatus.textContent = `${step}… ${elapsed.toFixed(1)}s`;
+      el.scanStatus.textContent = `Cloud browser review in progress… ${elapsed.toFixed(1)}s`;
     };
     tick();
     tickerTimer = setInterval(tick, 100);
@@ -215,7 +212,7 @@ function setScanTicker(active) {
 
 async function deepScan() {
   state.error = "";
-  if (state.demo !== "live" || !EXTENSION) {
+  if (!EXTENSION) {
     state.demoScanning = true;
     render();
     await new Promise((r) => setTimeout(r, 2600));
@@ -223,10 +220,13 @@ async function deepScan() {
     render();
     return;
   }
+  // Preview controls never turn a real Deep scan click into a simulated scan.
+  setDemo("live");
   state.scanning = { mode: "deep", startedAt: Date.now() };
   render();
   try {
     state.result = await send("scan", { tabId: state.tabId, mode: "deep" });
+    await refresh();
   } catch (err) {
     state.error = `Deep scan failed: ${err.message}`;
   }
@@ -276,9 +276,11 @@ function setDemo(demo) {
 /* ------------------------------------------------------------------ init */
 
 async function init() {
+  // Demo scores belong to the standalone preview, never the installed extension.
+  if (EXTENSION) el.demoSwitcher.closest(".demo-row").style.display = "none";
   try {
     const saved = localStorage.getItem("trustline.demo");
-    if (saved && (saved === "live" || saved in DEMO_RESULTS)) state.demo = saved;
+    if (!EXTENSION && saved && (saved === "live" || saved in DEMO_RESULTS)) state.demo = saved;
   } catch {
     /* ignore */
   }
