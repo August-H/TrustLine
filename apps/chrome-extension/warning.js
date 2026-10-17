@@ -143,7 +143,7 @@ const RULES = [
   },
 ];
 
-const TAG_LABELS = { high: "DANGER", network: "CAUTION", heuristic: "WARNING", info: "NOTE" };
+const TAG_LABELS = { high: "Danger", network: "Caution", heuristic: "Warning", info: "Note" };
 const TAG_ORDER = { high: 0, network: 1, heuristic: 2, info: 3 };
 
 const fallbackRule = {
@@ -236,21 +236,118 @@ const RISKS = [
 ];
 
 function renderHeader() {
+  const paused = verdict === "suspicious";
   document.body.dataset.status = verdict;
-  document.title = `${domain || "Site"} blocked · TrustLine`;
-  document.getElementById("title").textContent =
-    verdict === "suspicious" ? "This site looks suspicious" : "This site may be dangerous";
-  document.getElementById("eyebrow").textContent =
-    verdict === "suspicious" ? "TrustLine paused this page" : "TrustLine blocked this page";
-  document.getElementById("domain").textContent = domain || "unknown host";
-
-  document.getElementById("score").textContent = score === null ? "--" : String(score);
-  const meter = document.getElementById("meter");
-  meter.setAttribute("aria-valuenow", String(score ?? 0));
-  requestAnimationFrame(() => {
-    document.getElementById("meter-fill").style.width = `${score ?? 0}%`;
-  });
+  document.title = domain ? `TrustLine ${paused ? "paused" : "blocked"} ${domain}` : "TrustLine blocked a site";
+  document.getElementById("title").textContent = paused ? "This site looks suspicious" : "This site may be dangerous";
+  const lead = document.getElementById("lead");
+  lead.replaceChildren(
+    paused ? "TrustLine paused it before it opened. " : "TrustLine stopped it before it opened. "
+  );
+  if (score === null) {
+    lead.append(paused ? "Some things about it look like a scam." : "It looks like a scam or fake website.");
+  } else {
+    const rating = score < 40 ? ", which is very low" : score < 70 ? ", which is low" : "";
+    lead.append("Its safety score is ", el("strong", { text: `${score} out of 100` }), `${rating}.`);
+  }
 }
+
+/* --------------------------------------------------------------- address */
+
+// Digits that scammers swap in for the letters they resemble.
+const LOOKALIKES = { 0: "o", 1: "l", 3: "e", 5: "s" };
+const SECOND_LEVEL = new Set(["co", "com", "org", "net", "gov", "ac", "edu"]);
+const IP_HOST = /^(\d{1,3}(\.\d{1,3}){3}|\[.*\])$/;
+
+// The registrable part of the hostname: what someone actually had to buy.
+// A simple approximation of the public-suffix rules, good enough to show
+// people which end of the address to read.
+function ownerOf(host) {
+  if (IP_HOST.test(host)) return host;
+  const labels = host.split(".");
+  const tld = labels.at(-1);
+  const twoPart = labels.length >= 3 && tld.length === 2 && SECOND_LEVEL.has(labels.at(-2));
+  return labels.slice(twoPart ? -3 : -2).join(".");
+}
+
+function findLookalikes(host) {
+  if (IP_HOST.test(host)) return [];
+  const isLetter = (c) => /[a-z]/i.test(c || "");
+  const hits = [];
+  for (let i = 0; i < host.length; i++) {
+    const c = host[i];
+    if (c in LOOKALIKES && (isLetter(host[i - 1]) || isLetter(host[i + 1]))) hits.push(i);
+  }
+  return hits;
+}
+
+function wordAt(host, i) {
+  const start = Math.max(host.lastIndexOf(".", i), host.lastIndexOf("-", i)) + 1;
+  const ends = [host.indexOf(".", i), host.indexOf("-", i)].filter((n) => n !== -1);
+  return host.slice(start, ends.length ? Math.min(...ends) : host.length);
+}
+
+function markedText(host, from, to, hits) {
+  const nodes = [];
+  let cursor = from;
+  for (const i of hits) {
+    if (i < from || i >= to) continue;
+    if (i > cursor) nodes.push(host.slice(cursor, i));
+    nodes.push(el("mark", { class: "lookalike", text: host[i] }));
+    cursor = i + 1;
+  }
+  if (cursor < to) nodes.push(host.slice(cursor, to));
+  return nodes;
+}
+
+function renderAddress() {
+  const target = document.getElementById("domain");
+  const notesList = document.getElementById("address-notes");
+  if (!domain) {
+    target.textContent = "an unknown site";
+    notesList.hidden = true;
+    return;
+  }
+
+  const host = domain;
+  const owner = ownerOf(host);
+  const split = host.length - owner.length;
+  const hits = findLookalikes(host);
+  target.style.setProperty("--chars", String(host.length));
+  target.setAttribute("aria-label", host);
+
+  const notes = [];
+  if (split > 0) {
+    target.replaceChildren(
+      ...markedText(host, 0, split, hits),
+      el("span", { class: "owner" }, markedText(host, split, host.length, hits))
+    );
+    notes.push(["This address really belongs to ", el("code", { text: owner }), ". The start can say anything."]);
+  } else {
+    target.replaceChildren(...markedText(host, 0, host.length, hits));
+  }
+
+  const seen = new Set();
+  for (const i of hits) {
+    const word = wordAt(host, i);
+    const key = `${host[i]}:${word}`;
+    if (seen.has(key) || seen.size >= 2) continue;
+    seen.add(key);
+    notes.push([
+      "The ",
+      el("code", { text: host[i] }),
+      " in ",
+      el("code", { text: word }),
+      ` is a number, not the letter "${LOOKALIKES[host[i]]}".`,
+    ]);
+  }
+  if (host.includes("xn--")) notes.push(["This address uses foreign letters that can look like ordinary ones."]);
+
+  notesList.replaceChildren(...notes.map((parts) => el("li", {}, parts)));
+  notesList.hidden = notes.length === 0;
+}
+
+/* ---------------------------------------------------------------- lists */
 
 function renderFindings(findings) {
   const list = document.getElementById("findings");
@@ -263,8 +360,6 @@ function renderFindings(findings) {
       ])
     )
   );
-  const n = findings.filter((f) => f.rule.tag !== "info").length;
-  document.getElementById("finding-count").textContent = `${n} reason${n === 1 ? "" : "s"}`;
 
   const more = document.getElementById("findings-more");
   const extra = findings.length - VISIBLE_FINDINGS;
@@ -278,20 +373,18 @@ function renderFindings(findings) {
   }
 }
 
-function renderRisks(findings) {
-  const container = document.getElementById("risks");
-  container.replaceChildren(
+function renderRisks() {
+  const svgNs = "http://www.w3.org/2000/svg";
+  document.getElementById("risks").replaceChildren(
     ...RISKS.map((risk) => {
-      // Risks backed by a flagged reason get a stronger outline; no labels needed.
-      const linked = findings.some((f) => f.rule.risks.includes(risk.id));
-      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      const svg = document.createElementNS(svgNs, "svg");
       svg.setAttribute("viewBox", "0 0 24 24");
       svg.setAttribute("aria-hidden", "true");
       svg.classList.add("risk-icon");
-      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      const path = document.createElementNS(svgNs, "path");
       path.setAttribute("d", risk.icon);
       svg.append(path);
-      return el("article", { class: "risk", dataset: { linked: String(linked) } }, [
+      return el("li", { class: "risk" }, [
         el("div", { class: "risk-head" }, [svg, el("h3", { text: risk.title })]),
         el("p", { text: risk.summary }),
       ]);
@@ -396,8 +489,9 @@ proceed.addEventListener("click", async () => {
 
 const findings = buildFindings();
 renderHeader();
+renderAddress();
 renderFindings(findings);
-renderRisks(findings);
+renderRisks();
 document.getElementById("expected-host").textContent = domain ? `Flagged: ${domain}` : "No valid destination to verify";
 proceed.textContent = domain ? `Allowlist for this session & Proceed to ${domain}` : "No valid destination";
 updateGate();

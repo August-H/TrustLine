@@ -129,11 +129,11 @@ function render() {
     el.pillLabel.textContent = EXTENSION ? "Connecting…" : "Standalone preview";
   } else if (state.daemon.online) {
     el.pill.dataset.state = "online";
-    el.pillLabel.textContent = "Daemon Active";
+    el.pillLabel.textContent = "Daemon active";
     el.pill.title = `Connected to ${state.daemon.baseUrl}${state.daemon.version ? ` (v${state.daemon.version})` : ""}`;
   } else {
     el.pill.dataset.state = "mock";
-    el.pillLabel.textContent = "Mock Mode";
+    el.pillLabel.textContent = "Mock mode";
     el.pill.title = `Daemon unreachable at ${state.daemon.baseUrl}. Using local heuristics.`;
   }
 
@@ -175,7 +175,7 @@ function render() {
   el.scanBtn.classList.toggle("is-scanning", scanning);
   el.scanBtn.disabled = scanning || view.kind === "unscannable";
   el.scanBtn.setAttribute("aria-busy", String(scanning));
-  el.scanLabel.textContent = scanning ? "Scanning…" : "Deep Scan";
+  el.scanLabel.textContent = scanning ? "Scanning…" : "Deep scan";
   setScanTicker(scanning);
   if (!scanning) {
     el.scanStatus.textContent = state.error;
