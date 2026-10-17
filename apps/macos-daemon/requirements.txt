@@ -1,0 +1,4 @@
+mitmproxy==12.2.3
+python-dotenv==1.2.4
+PyJWT[crypto]==2.15.1
+playwright==1.64.0
