@@ -7,8 +7,6 @@ const target = params.get("url") || "";
 const verdict = params.get("verdict") === "suspicious" ? "suspicious" : "dangerous";
 const rawScore = params.get("score");
 const score = rawScore && /^\d{1,3}$/.test(rawScore) ? Math.min(100, Number(rawScore)) : null;
-const source = params.get("source");
-const scannedAt = Number(params.get("ts")) || Date.now();
 
 let parsed = null;
 let domain = "";
@@ -64,77 +62,77 @@ const RULES = [
     re: /punycode|xn--|look-?alike|homograph|typosquat|impersonat/i,
     tag: "high",
     risks: ["credential", "financial"],
-    detail: "The address imitates a trusted brand using look-alike characters or spellings, so it can pass a quick glance.",
+    detail: "The web address copies the name of a company you may trust, using letters that look almost the same.",
   },
   {
     id: "userinfo",
     re: /embeds credentials|before the hostname/i,
     tag: "high",
     risks: ["credential"],
-    detail: "Text before an @ in a URL is ignored by the browser, a trick used to disguise the real destination.",
+    detail: "The link is written to hide where it really goes.",
   },
   {
     id: "known-bad",
     re: /phish|malware|malicious|blocklist|known threat|exploit|drive-?by/i,
     tag: "high",
     risks: ["credential", "malware"],
-    detail: "This destination matches known threat intelligence or exhibits malicious behaviour.",
+    detail: "This site is on a list of known scam or harmful websites.",
   },
   {
     id: "payload",
     re: /download|executable|payload|\.(exe|dmg|apk|scr|msi|pkg)\b/i,
     tag: "high",
     risks: ["malware"],
-    detail: "The link points at a file that can run code on your device if opened.",
+    detail: "This link downloads a program that could harm your computer if you open it.",
   },
   {
     id: "raw-ip",
     re: /raw ip|ip address/i,
     tag: "network",
     risks: ["malware", "credential"],
-    detail: "Legitimate services almost always use a domain name. Bare IPs are common for throwaway attack infrastructure.",
+    detail: "Real companies use a normal web name, not a string of numbers. Scammers often use numbers instead.",
   },
   {
     id: "plaintext",
     re: /not encrypted|unencrypted|\(http\)|certificate|tls|ssl/i,
     tag: "network",
     risks: ["credential", "financial"],
-    detail: "Anything you send, including passwords and card numbers, can be read or modified in transit.",
+    detail: "This connection is not private. Others could see anything you type, including passwords and card numbers.",
   },
   {
     id: "redirect",
     re: /redirect/i,
     tag: "network",
     risks: ["credential", "malware"],
-    detail: "The page bounces through intermediate hosts, a pattern used to evade filters.",
+    detail: "The link sends you through several other sites first, a trick used to hide scams.",
   },
   {
     id: "financial-bait",
     re: /wallet|payment|billing|card|bank|crypto|invoice|refund/i,
     tag: "heuristic",
     risks: ["financial"],
-    detail: "The address references payments or wallets, a common lure for card capture and wallet-draining scams.",
+    detail: "The address mentions payments or banking, a common trick to get your card or bank details.",
   },
   {
     id: "credential-bait",
     re: /credential|bait|login|sign-?in|verify|password|account/i,
     tag: "heuristic",
     risks: ["credential"],
-    detail: "Words like \"login\", \"secure\" or \"verify\" in an unfamiliar domain are a hallmark of fake sign-in pages.",
+    detail: "Words like \"login\" or \"verify\" in an unfamiliar address are a common sign of a fake sign-in page.",
   },
   {
     id: "tld",
     re: /top-level domain|\btld\b|abuse/i,
     tag: "heuristic",
     risks: ["malware", "financial"],
-    detail: "This domain ending is cheap to register and disproportionately used for short-lived scam sites.",
+    detail: "This kind of web address is cheap to set up and often used by short-lived scam sites.",
   },
   {
     id: "structure",
     re: /hyphen|subdomain|unusually long|hostname is/i,
     tag: "heuristic",
     risks: ["credential"],
-    detail: "Long, hyphenated or deeply nested hostnames are used to bury a fake brand name inside a real-looking address.",
+    detail: "Long or oddly built addresses are used to hide a fake company name inside a real-looking one.",
   },
   {
     id: "info",
@@ -145,14 +143,14 @@ const RULES = [
   },
 ];
 
-const TAG_LABELS = { high: "HIGH RISK", network: "NETWORK", heuristic: "HEURISTIC", info: "INFO" };
+const TAG_LABELS = { high: "DANGER", network: "CAUTION", heuristic: "WARNING", info: "NOTE" };
 const TAG_ORDER = { high: 0, network: 1, heuristic: 2, info: 3 };
 
 const fallbackRule = {
   id: "other",
   tag: "heuristic",
   risks: ["credential"],
-  detail: "TrustLine's scanner flagged this signal as part of its risk assessment.",
+  detail: "TrustLine found something about this site that matches known scams.",
 };
 
 function classify(text) {
@@ -191,21 +189,20 @@ function buildFindings() {
   const seen = new Set();
   for (const text of parseReasons()) {
     const rule = classify(text);
-    findings.push({ text, rule, origin: source === "daemon" ? "TrustLine daemon" : "TrustLine scanner" });
+    findings.push({ text, rule });
     seen.add(rule.id);
   }
   for (const text of inspectUrl(parsed)) {
     const rule = classify(text);
     if (seen.has(rule.id)) continue;
-    findings.push({ text, rule, origin: "Local URL inspection" });
+    findings.push({ text, rule });
     seen.add(rule.id);
   }
   const actionable = findings.filter((f) => f.rule.tag !== "info");
   if (actionable.length === 0) {
     findings.push({
-      text: verdict === "dangerous" ? "Low trust score from TrustLine's analysis" : "Below-threshold trust score",
+      text: verdict === "dangerous" ? "TrustLine gave this site a very low trust score" : "TrustLine gave this site a low trust score",
       rule: fallbackRule,
-      origin: "TrustLine scanner",
     });
   }
   return findings.sort((a, b) => TAG_ORDER[a.rule.tag] - TAG_ORDER[b.rule.tag]);
@@ -213,24 +210,28 @@ function buildFindings() {
 
 /* ---------------------------------------------------------------- render */
 
+// Show the most important reasons first; the rest sit behind a button so the
+// page still fits on one screen.
+const VISIBLE_FINDINGS = 3;
+
 const RISKS = [
   {
     id: "credential",
-    title: "Credential & identity theft",
-    summary: "Fake sign-in forms can harvest what you type and hijack your accounts.",
-    items: ["Passwords and usernames", "Session tokens and cookies", "One-time 2FA codes"],
+    icon: "M7 11V7a5 5 0 0 1 10 0v4M5 11h14v10H5z",
+    title: "Stolen Passwords & Accounts",
+    summary: "Scammers may use fake sign-in boxes on this page to steal your passwords and lock you out of your accounts.",
   },
   {
     id: "financial",
-    title: "Financial & payment fraud",
-    summary: "Checkout and wallet pages can be cloned to take money directly.",
-    items: ["Card capture on fake checkouts", "Crypto wallet draining approvals", "Fake billing or refund scams"],
+    icon: "M3 6h18v12H3zM3 10h18M7 15h4",
+    title: "Money & Credit Card Theft",
+    summary: "This site may trick you into entering credit card or bank details to steal your money.",
   },
   {
     id: "malware",
-    title: "Malware & payload execution",
-    summary: "The page itself can attempt to run code against your browser or device.",
-    items: ["Drive-by downloads", "Malicious scripts and extensions", "Browser exploitation"],
+    icon: "M3 4h18v12H3zM8 20h8M12 16v4M12 7v4M12 13.5v.01",
+    title: "Computer Viruses & Scams",
+    summary: "Visiting this page could install harmful software on your computer or freeze your screen with fake virus alerts.",
   },
 ];
 
@@ -243,13 +244,6 @@ function renderHeader() {
     verdict === "suspicious" ? "TrustLine paused this page" : "TrustLine blocked this page";
   document.getElementById("domain").textContent = domain || "unknown host";
 
-  const time = document.getElementById("scan-time");
-  const when = new Date(scannedAt);
-  time.dateTime = when.toISOString();
-  time.textContent = when.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" });
-  document.getElementById("scan-source").textContent =
-    source === "daemon" ? "Source: TrustLine daemon" : source === "mock" ? "Source: fallback analyzer" : "Source: unknown";
-
   document.getElementById("score").textContent = score === null ? "--" : String(score);
   const meter = document.getElementById("meter");
   meter.setAttribute("aria-valuenow", String(score ?? 0));
@@ -261,67 +255,48 @@ function renderHeader() {
 function renderFindings(findings) {
   const list = document.getElementById("findings");
   list.replaceChildren(
-    ...findings.map(({ text, rule, origin }) =>
-      el("li", { class: "finding" }, [
+    ...findings.map(({ text, rule }, i) =>
+      el("li", { class: "finding", ...(i >= VISIBLE_FINDINGS ? { hidden: "" } : {}) }, [
         el("span", { class: "tag", dataset: { tag: rule.tag }, text: TAG_LABELS[rule.tag] }),
         el("p", { class: "finding-title", text }),
         rule.detail ? el("p", { class: "finding-detail", text: rule.detail }) : null,
-        el("p", { class: "finding-origin", text: origin }),
       ])
     )
   );
   const n = findings.filter((f) => f.rule.tag !== "info").length;
-  document.getElementById("finding-count").textContent = `${n} signal${n === 1 ? "" : "s"}`;
+  document.getElementById("finding-count").textContent = `${n} reason${n === 1 ? "" : "s"}`;
+
+  const more = document.getElementById("findings-more");
+  const extra = findings.length - VISIBLE_FINDINGS;
+  if (extra > 0) {
+    more.hidden = false;
+    more.textContent = `Show ${extra} more reason${extra === 1 ? "" : "s"}`;
+    more.addEventListener("click", () => {
+      for (const item of list.children) item.hidden = false;
+      more.hidden = true;
+    });
+  }
 }
 
 function renderRisks(findings) {
   const container = document.getElementById("risks");
   container.replaceChildren(
     ...RISKS.map((risk) => {
-      const linked = findings.filter((f) => f.rule.risks.includes(risk.id));
-      const high = linked.some((f) => f.rule.tag === "high");
-      const level = high || linked.length >= 2 ? "high" : linked.length === 1 ? "elevated" : "possible";
-      const levelLabel = { high: "HIGH LIKELIHOOD", elevated: "ELEVATED", possible: "POSSIBLE" }[level];
-      return el("article", { class: "risk", dataset: { level } }, [
-        el("span", { class: "risk-level", text: levelLabel }),
-        el("h3", { text: risk.title }),
+      // Risks backed by a flagged reason get a stronger outline; no labels needed.
+      const linked = findings.some((f) => f.rule.risks.includes(risk.id));
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", "0 0 24 24");
+      svg.setAttribute("aria-hidden", "true");
+      svg.classList.add("risk-icon");
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", risk.icon);
+      svg.append(path);
+      return el("article", { class: "risk", dataset: { linked: String(linked) } }, [
+        el("div", { class: "risk-head" }, [svg, el("h3", { text: risk.title })]),
         el("p", { text: risk.summary }),
-        el("ul", {}, risk.items.map((item) => el("li", { text: item }))),
-        el("p", {
-          class: "risk-links",
-          text: linked.length
-            ? `Linked to ${linked.length} flagged signal${linked.length === 1 ? "" : "s"}`
-            : "No direct signal, still possible",
-        }),
       ]);
     })
   );
-}
-
-function renderMeta() {
-  const rows = [];
-  const add = (label, value, flag) => rows.push(el("div", {}, [el("dt", { text: label }), el("dd", { text: value, dataset: flag ? { flag } : {} })]));
-
-  add("Destination", safeTarget || target || "Unknown");
-  if (parsed) {
-    const https = parsed.protocol === "https:";
-    add("Protocol", https ? "HTTPS (encrypted)" : "HTTP (unencrypted)", https ? "ok" : "bad");
-    add("Hostname", parsed.hostname);
-    add("Port", parsed.port || (https ? "443 (default)" : "80 (default)"));
-    add("Path", parsed.pathname + parsed.search || "/");
-  }
-  add("Verdict", verdict.toUpperCase(), verdict === "dangerous" ? "bad" : "warn");
-  add("Trust score", score === null ? "Unavailable" : `${score}/100`);
-  add(
-    "Scan engine",
-    source === "daemon"
-      ? "TrustLine daemon (online)"
-      : source === "mock"
-        ? "Fallback heuristic analyzer (daemon offline)"
-        : "Unknown",
-    source === "daemon" ? "ok" : "warn"
-  );
-  document.getElementById("meta").replaceChildren(...rows);
 }
 
 /* ------------------------------------------------------------ navigation */
@@ -423,7 +398,6 @@ const findings = buildFindings();
 renderHeader();
 renderFindings(findings);
 renderRisks(findings);
-renderMeta();
 document.getElementById("expected-host").textContent = domain ? `Flagged: ${domain}` : "No valid destination to verify";
 proceed.textContent = domain ? `Allowlist for this session & Proceed to ${domain}` : "No valid destination";
 updateGate();

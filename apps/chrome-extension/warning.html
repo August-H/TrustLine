@@ -15,15 +15,6 @@
           </svg>
           <span>TrustLine</span>
         </div>
-        <p class="status-badge" role="status">
-          <span class="status-dot" aria-hidden="true"></span>
-          <span>Intervention active // Connection intercepted</span>
-        </p>
-        <p class="topbar-meta">
-          <time id="scan-time"></time>
-          <span class="sep" aria-hidden="true">·</span>
-          <span id="scan-source">Unknown source</span>
-        </p>
       </div>
     </header>
 
@@ -39,25 +30,26 @@
           <p class="eyebrow" id="eyebrow">TrustLine blocked this page</p>
           <h1 id="title">This site may be dangerous</h1>
           <p class="lead">
-            TrustLine stopped this page before it finished loading. The destination below shows
-            signals commonly used by phishing, fraud, and malware sites.
+            TrustLine stopped this page before it opened because it looks like a scam or fake website.
           </p>
-          <p class="domain-pill mono" id="domain">unknown host</p>
+          <div class="hero-facts">
+            <p class="domain-pill mono" id="domain">unknown host</p>
 
-          <div class="meter" aria-labelledby="meter-label">
-            <div class="meter-head">
-              <span id="meter-label">Trust score</span>
-              <span class="meter-value"><strong id="score">--</strong><span class="muted">/100</span></span>
-            </div>
-            <div class="meter-track" role="meter" id="meter" aria-valuemin="0" aria-valuemax="100" aria-labelledby="meter-label">
-              <div class="meter-fill" id="meter-fill"></div>
-              <span class="meter-tick" style="left: 40%"></span>
-              <span class="meter-tick" style="left: 70%"></span>
-            </div>
-            <div class="meter-scale" aria-hidden="true">
-              <span>Dangerous</span>
-              <span style="left: 40%">Suspicious</span>
-              <span style="left: 70%">Safe</span>
+            <div class="meter" aria-labelledby="meter-label">
+              <div class="meter-head">
+                <span id="meter-label">Trust score</span>
+                <span class="meter-value"><strong id="score">--</strong><span class="muted">/100</span></span>
+              </div>
+              <div class="meter-track" role="meter" id="meter" aria-valuemin="0" aria-valuemax="100" aria-labelledby="meter-label">
+                <div class="meter-fill" id="meter-fill"></div>
+                <span class="meter-tick" style="left: 40%"></span>
+                <span class="meter-tick" style="left: 70%"></span>
+              </div>
+              <div class="meter-scale" aria-hidden="true">
+                <span>Dangerous</span>
+                <span style="left: 40%">Suspicious</span>
+                <span style="left: 70%">Safe</span>
+              </div>
             </div>
           </div>
         </div>
@@ -72,34 +64,19 @@
           <section class="card" aria-labelledby="why-title">
             <header class="card-head">
               <h2 id="why-title">Why is this site not safe?</h2>
-              <span class="count" id="finding-count">0 signals</span>
+              <span class="count" id="finding-count">0 reasons</span>
             </header>
             <ol class="findings" id="findings"></ol>
+            <button type="button" class="more" id="findings-more" hidden></button>
           </section>
 
           <section aria-labelledby="risks-title">
             <h2 class="section-title" id="risks-title">What happens if you continue?</h2>
             <div class="risks" id="risks"></div>
           </section>
-
-          <section class="card" aria-labelledby="meta-title">
-            <header class="card-head">
-              <h2 id="meta-title">Technical inspection</h2>
-            </header>
-            <dl class="meta" id="meta"></dl>
-          </section>
         </div>
 
         <aside class="col-side">
-          <section class="card advice" aria-labelledby="advice-title">
-            <h2 id="advice-title">Safer alternatives</h2>
-            <ul>
-              <li>Go back and don't enter any information on this site.</li>
-              <li>Expecting a real service? Type its official address yourself instead of following a link.</li>
-              <li>If you already entered a password here, change it now and turn on 2FA.</li>
-            </ul>
-          </section>
-
           <details class="card override" id="override">
             <summary>
               <span>
