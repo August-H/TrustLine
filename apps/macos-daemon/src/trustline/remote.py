@@ -146,6 +146,14 @@ class CloudflareBrowser:
         self.mitigation = response.headers.get("cf-mitigated")
         if self.mitigation == "guardrails" and "Cloudflare blocked a required navigation" not in self.blocked:
             self.blocked.append("Cloudflare blocked a required navigation")
+        # Many sites answer on another origin of the same site (siemens.com ->
+        # www.siemens.com/en-us/, http -> https). Inspect where the server sent
+        # us, but never follow a redirect to a different site.
+        landed, _ = normalize_origin(self.page.url)
+        if landed != self.initial_origin:
+            if not same_site_redirect(self.initial_origin, landed):
+                raise RemoteError("The website redirected to a different site")
+            self.initial_origin = landed
 
     def document_response(self, response):
         # Challenge scripts may reload the main document after goto() returns.
@@ -232,7 +240,7 @@ class CloudflareBrowser:
         for attempt in range(2):
             try:
                 return await asyncio.to_thread(request_json, self.base + "?keep_alive=60000", method="POST",
-                    token=self.token, data={"guardrails": {"allowedDomains": [host, "*." + host],
+                    token=self.token, data={"guardrails": {"allowedDomains": allowed_domains(host),
                                                           "allowedDomainSets": ["common-cdns"]}})
             except HTTPError as error:
                 status = error.code
@@ -375,6 +383,27 @@ class CloudflareBrowser:
         finally:
             if self.playwright:
                 await self.playwright.stop()
+
+
+def allowed_domains(host):
+    """The host and its subdomains, plus the bare domain for a www. address."""
+    domains = [host, "*." + host]
+    if host.startswith("www.") and host.count(".") >= 2:
+        domains += [host[4:], "*." + host[4:]]
+    return domains
+
+
+def same_site_redirect(initial_origin, landed_origin):
+    """Whether a server redirect stays on the reviewed site.
+
+    Allowed: an http -> https upgrade, a move to a subdomain (www., a region),
+    and www.example -> example. Never a different site, and never a downgrade.
+    """
+    before, after = urlsplit(initial_origin), urlsplit(landed_origin)
+    if after.scheme != before.scheme and not (before.scheme == "http" and after.scheme == "https"):
+        return False
+    a, b = before.hostname or "", after.hostname or ""
+    return bool(a and b) and (a == b or b.endswith("." + a) or a == "www." + b)
 
 
 SIGN_IN_FIELD = re.compile(r"passw|passcode|otp|one-time-code", re.I)
