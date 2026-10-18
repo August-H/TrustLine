@@ -282,19 +282,7 @@ function renderScore() {
 
 // Digits that scammers swap in for the letters they resemble.
 const LOOKALIKES = { 0: "o", 1: "l", 3: "e", 5: "s" };
-const SECOND_LEVEL = new Set(["co", "com", "org", "net", "gov", "ac", "edu"]);
-const IP_HOST = /^(\d{1,3}(\.\d{1,3}){3}|\[.*\])$/;
-
-// The registrable part of the hostname: what someone actually had to buy.
-// A simple approximation of the public-suffix rules, good enough to show
-// people which end of the address to read.
-function ownerOf(host) {
-  if (IP_HOST.test(host)) return host;
-  const labels = host.split(".");
-  const tld = labels.at(-1);
-  const twoPart = labels.length >= 3 && tld.length === 2 && SECOND_LEVEL.has(labels.at(-2));
-  return labels.slice(twoPart ? -3 : -2).join(".");
-}
+// ownerOf() and IP_HOST come from address.js.
 
 function findLookalikes(host) {
   if (IP_HOST.test(host)) return [];
@@ -420,7 +408,10 @@ function renderRisks() {
 /* ------------------------------------------------------------ navigation */
 
 document.getElementById("back").addEventListener("click", () => {
-  if (history.length > 2) history.go(-2);
+  // From the scanning screen the blocked site never entered history, so one
+  // step back is the page the person came from.
+  const steps = params.get("via") === "scan" ? 1 : 2;
+  if (history.length > steps) history.go(-steps);
   else location.replace("about:blank");
 });
 

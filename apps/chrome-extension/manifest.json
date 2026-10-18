@@ -12,9 +12,25 @@
   "background": {
     "service_worker": "background.js"
   },
-  "permissions": ["tabs", "storage"],
+  "permissions": [
+    "tabs",
+    "storage",
+    "declarativeNetRequestWithHostAccess"
+  ],
   "host_permissions": [
     "http://127.0.0.1:8765/*",
-    "http://localhost:8765/*"
+    "http://localhost:8765/*",
+    "http://*/*",
+    "https://*/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "scanning.html"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
   ]
 }

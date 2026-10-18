@@ -14,8 +14,25 @@ Cloudflare Browser Run reviews from the **Deep scan** button.
 4. After updating the extension, click its **Reload** button in `chrome://extensions`.
 
 The extension can request scores and cloud reviews in an ordinary Chrome window.
-Holding uncertain pages before they load still requires Chrome to use the daemon
-proxy and trust its certificate. The extension alone scans after navigation starts.
+
+## Checking sites before they open
+
+With **Auto-scan websites** on, a `declarativeNetRequest` session rule sends every
+top-level http(s) navigation to `scanning.html` before any request reaches the site.
+The page asks the daemon for a quick score, shows for at least a second, then:
+
+- **Safe:** the domain is cleared for the rest of the browser session and the tab
+  continues to the destination.
+- **Suspicious or dangerous:** the tab goes to `warning.html` (when blocking is on).
+- **Daemon offline:** the page loads anyway, and the domain is checked again after
+  60 seconds. Without a daemon there is no verdict to act on.
+
+This needs `declarativeNetRequestWithHostAccess` and access to all http(s) sites.
+Domains you allow from the warning page, `localhost` and `127.0.0.1` are never held.
+
+Preview the screen without the daemon: open
+`scanning.html?url=https%3A%2F%2Fexample.com&demo=safe` (or `demo=suspicious`,
+`demo=dangerous`).
 
 ## Scores and Deep scan
 
