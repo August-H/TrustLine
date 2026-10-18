@@ -59,7 +59,8 @@ class ExtensionAPI:
                    [result.get("reason", "TrustLine score unavailable")])
         data = {"verdict": "safe" if verified else verdict, "score": score,
                 "verified": verified, "score_source": "verified_database" if verified else "jev",
-                "jev_probability": probability, "reasons": reasons, "target_url": target}
+                "jev_probability": probability, "jev_status": result["status"],
+                "reasons": reasons, "target_url": target}
         if mode == "deep" and not verified:
             row = self.proxy.reviews.start(target, force=not join_pending)
             if row is None:

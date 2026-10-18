@@ -58,11 +58,23 @@ class ExtensionAPITests(unittest.IsolatedAsyncioTestCase):
         result = await self.api.analyze("https://youtube.com.attacker.example/private?token=secret", "quick")
         self.assertEqual(result["score"], 73)
         self.assertEqual(result["jev_probability"], 0.27)
+        self.assertEqual(result["jev_status"], "uncertain")
         self.assertFalse(result["verified"])
         observation = self.jev.assess.call_args.args[0]
         self.assertEqual(observation.origin, "https://youtube.com.attacker.example")
         self.assertNotIn("secret", str(observation.model_state()))
         self.reviewer.review.assert_not_awaited()
+
+    async def test_jev_status_survives_a_cloud_verdict(self):
+        self.jev.assess.return_value = 0.95
+        result = await self.api.analyze("https://ordinary.example/", "quick")
+        self.assertEqual(result["jev_status"], "suspicious")
+        self.assertEqual(result["verdict"], "dangerous")
+        result = await self.api.analyze("https://ordinary.example/", "deep")
+        result["review"] = await self.finish_review(result)
+        self.api.apply_review(result)
+        self.assertEqual(result["verdict"], "safe")
+        self.assertEqual(result["jev_status"], "suspicious")
 
     async def test_unavailable_jev_does_not_invent_a_score_even_when_cloud_allows(self):
         self.jev.assess.side_effect = JevError("Jev unavailable")

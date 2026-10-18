@@ -51,7 +51,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     daemon = commands.add_parser("serve", help="Run the background analysis service")
     daemon.add_argument("--model", default="jev-latest")
-    daemon.add_argument("--threshold", type=float, default=0.9)
+    daemon.add_argument("--threshold", type=float, default=0.8)
     daemon.add_argument("--port", type=int, default=8899)
     daemon.add_argument("--api-port", type=int, default=8765, help="Loopback Chrome extension API port")
     browser = commands.add_parser("launch-chrome", help="Open a Chrome session using the proxy")

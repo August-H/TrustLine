@@ -146,8 +146,11 @@ It works only in the Chrome session using this proxy and trusting its CA.
 
 Jev receives only origin, hostname, HTTP method, resource type, HTTPS flag, and
 punycode flag. It receives no path, query, headers, cookies, or page content.
-Its Noul answer is the probability that the supplied metadata meets the stated
-suspicious-origin criteria. It is not a separate confidence or severity score.
+Each request asks two Noul questions: whether the metadata meets the stated
+suspicious-origin criteria, and whether the hostname misspells a well-known name.
+For the second, code supplies candidate readings of the hostname with common
+substitutions undone (`visu4lstudio` reads as `visualstudio`). The higher
+probability is the result. It is not a separate confidence or severity score.
 
 For remote review, Cloudflare receives the destination origin and path. OpenAI
 receives the remote browser's rendered text, page/link/form metadata, screenshots,

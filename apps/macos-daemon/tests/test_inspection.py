@@ -12,7 +12,8 @@ from urllib.error import HTTPError, URLError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from trustline.inspection import (
-    ApprovedSites, Inspector, JevClient, JevError, NoRedirects, Observation, normalize_origin,
+    ApprovedSites, Inspector, JevClient, JevError, NoRedirects, Observation, lookalike_readings,
+    normalize_origin,
 )
 
 
@@ -161,10 +162,14 @@ class JevTests(unittest.TestCase):
         self.client.opener = Mock()
         self.client.opener.open.return_value = response
 
+    def answers(self, suspicious, lookalike=0.1):
+        return {"answers": {"suspicious": {"type": "noul", "noul": suspicious},
+                            "lookalike": {"type": "noul", "noul": lookalike}}}
+
     def test_official_contract_and_data_minimization(self):
         self.response({
             "model": "jev-1.13.0",
-            "answers": {"suspicious": {"type": "noul", "noul": 0.9}},
+            **self.answers(0.9),
             "usage": {"input_tokens": 120, "output_tokens": 12},
         })
         self.assertEqual(self.client.assess(self.observation), 0.9)
@@ -172,8 +177,12 @@ class JevTests(unittest.TestCase):
         self.assertEqual(request.full_url, "https://api.typesafe.ai/v1/systemone")
         payload = json.loads(request.data)
         self.assertEqual(payload["model"], "jev-latest")
-        self.assertEqual(payload["questions"]["suspicious"]["type"], "noul")
-        self.assertEqual(set(payload["questions"]["suspicious"]["criteria"]), {"true", "false"})
+        self.assertEqual(set(payload["questions"]), {"suspicious", "lookalike"})
+        for question in payload["questions"].values():
+            self.assertEqual(question["type"], "noul")
+            self.assertEqual(set(question["criteria"]), {"true", "false"})
+        self.assertEqual(payload["questions"]["lookalike"]["instructions"]["readings"],
+                         lookalike_readings("example.com"))
         self.assertEqual(request.get_header("Authorization"), "Bearer test-secret")
         self.assertEqual(request.get_header("Content-type"), "application/json")
         self.assertEqual(payload["state"], {
@@ -183,14 +192,39 @@ class JevTests(unittest.TestCase):
         self.assertNotIn("secret", request.data.decode())
         self.assertNotIn("private-context", request.data.decode())
 
+    def test_lookalike_answer_raises_the_probability(self):
+        self.response(self.answers(0.05, lookalike=0.89))
+        self.assertEqual(self.client.assess(self.observation), 0.89)
+
+    def test_lookalike_readings_undo_character_substitutions(self):
+        for hostname, reading in [("visu4lstudio.com", "visualstudio"), ("paypa1.com", "paypal"),
+                                  ("linkedln.com", "linkedin"), ("githhub.com", "github"),
+                                  ("rnicrosoft.com", "microsoft"), ("app1e-id.com", "apple-id")]:
+            with self.subTest(hostname=hostname):
+                self.assertIn(reading, lookalike_readings(hostname))
+        self.assertNotIn("github", lookalike_readings("github.com"))
+        self.assertEqual(lookalike_readings("8.8.8.8"), [])
+        long_host = "l" * 60 + "1inkedin.example"
+        self.assertLessEqual(len(lookalike_readings(long_host)), 24)
+        self.assertIn("l" * 60 + "linkedin", lookalike_readings(long_host))
+
+    def test_ip_origins_ask_only_the_main_question(self):
+        self.response({"answers": {"suspicious": {"type": "noul", "noul": 0.3}}})
+        observation = Observation.parse({"url": "https://8.8.8.8"})
+        self.assertEqual(self.client.assess(observation), 0.3)
+        payload = json.loads(self.client.opener.open.call_args.args[0].data)
+        self.assertEqual(set(payload["questions"]), {"suspicious"})
+
     def test_invalid_probabilities_are_rejected(self):
         for value in [True, "0.9", None, -0.1, 1.1, float("nan"), float("inf")]:
-            self.response({"answers": {"suspicious": {"type": "noul", "noul": value}}})
-            with self.subTest(value=value), self.assertRaises(JevError):
-                self.client.assess(self.observation)
+            for answers in [self.answers(value), self.answers(0.1, lookalike=value)]:
+                self.response(answers)
+                with self.subTest(value=value), self.assertRaises(JevError):
+                    self.client.assess(self.observation)
 
     def test_missing_or_wrong_answers_are_rejected(self):
-        for payload in [{}, [], {"answers": {"suspicious": {"type": "choice", "noul": 0.9}}}]:
+        for payload in [{}, [], {"answers": {"suspicious": {"type": "choice", "noul": 0.9}}},
+                        {"answers": {"suspicious": {"type": "noul", "noul": 0.9}}}]:
             self.response(payload)
             with self.assertRaises(JevError):
                 self.client.assess(self.observation)
@@ -222,7 +256,7 @@ class JevTests(unittest.TestCase):
         self.assertNotIn("private response", str(raised.exception))
 
     def test_rate_limits_back_off_across_requests_and_recover(self):
-        self.response({"answers": {"suspicious": {"type": "noul", "noul": 0.1}}})
+        self.response(self.answers(0.1))
         valid_response = self.client.opener.open.return_value
         self.client.opener.open.side_effect = [
             HTTPError("https://api.typesafe.ai/v1/systemone", 429, "rate limit", {}, None),

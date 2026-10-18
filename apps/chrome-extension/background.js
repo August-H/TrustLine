@@ -18,6 +18,8 @@ const CONFIG = {
   // When empty, the bundled warning.html is used.
   WARNING_PAGE_URL: "",
 };
+// Served by the daemon proxy; must match REDIRECT_HOST in proxy.py.
+const BLOCKED_HOST = "blocked.example.com";
 
 const VERDICTS = ["safe", "suspicious", "dangerous"];
 const STATUS_COLORS = {
@@ -125,6 +127,7 @@ function normalizeResult(raw, url, mode, source) {
     verified: raw?.verified === true,
     scoreSource: raw?.score_source ?? null,
     jevProbability: raw?.jev_probability ?? null,
+    jevStatus: raw?.jev_status ?? null,
     review: raw?.review ?? null,
     verdict,
     score,
@@ -197,7 +200,7 @@ async function scanTab(tabId, url, mode = "quick") {
       // A user may retry a previously inconclusive proxy check from the popup.
       // Release that checking tab on approval even if its page stopped polling.
       const current = new URL(url);
-      if (result.review?.status === "allow" && current.hostname === "blocked.example.com" &&
+      if (result.review?.status === "allow" && current.hostname === BLOCKED_HOST &&
           current.pathname.startsWith("/_trustline/check/") && result.targetUrl !== url) {
         await chrome.tabs.update(tabId, { url: result.targetUrl });
       }
@@ -238,12 +241,18 @@ function warningPageUrl(targetUrl, result, reason) {
 }
 
 async function maybeBlock(tabId, result) {
-  if (result.verdict !== "dangerous") return;
+  // The proxy's checking page already holds the target; redirecting would drop its review.
+  if (hostnameOf(result.url) === BLOCKED_HOST) return;
+  // A completed cloud review supersedes Jev's URL judgment, as it does in the proxy.
+  const jevFlagged = result.jevStatus === "suspicious" &&
+    !["allow", "block"].includes(result.review?.status);
+  if (!jevFlagged && result.verdict !== "dangerous") return;
   const settings = await getSettings();
   if (!settings.autoScan || !settings.blockDangerous) return;
   const allowlist = await getAllowlist();
   if (allowlist.includes(result.domain)) return;
-  await chrome.tabs.update(tabId, { url: warningPageUrl(result.targetUrl || result.url, result) });
+  const shown = jevFlagged ? { ...result, verdict: "suspicious" } : result;
+  await chrome.tabs.update(tabId, { url: warningPageUrl(result.targetUrl || result.url, shown) });
 }
 
 /* ------------------------------------------------------------ action icon */

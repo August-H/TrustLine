@@ -119,6 +119,39 @@ test("cloud block redirects the tab to a warning with the actual target and Jev 
   assert.equal(destination.searchParams.get("verdict"), "dangerous");
 });
 
+test("a Jev-flagged quick scan redirects the tab to the suspicious warning page", async () => {
+  const w = worker([{ verdict: "dangerous", score: 5, jev_probability: 0.95, jev_status: "suspicious",
+    score_source: "jev", reasons: ["Lookalike hostname"] }]);
+  await vm.runInContext("scanTab(1, 'https://ordinary.example/', 'quick')", w.context);
+  const destination = new URL(w.tab.url);
+  assert.equal(destination.pathname, "/warning.html");
+  assert.equal(destination.searchParams.get("verdict"), "suspicious");
+  assert.equal(destination.searchParams.get("url"), "https://ordinary.example/");
+  assert.equal(destination.searchParams.get("score"), "5");
+});
+
+test("an uncertain Jev result does not redirect", async () => {
+  const w = worker([{ verdict: "suspicious", score: 50, jev_probability: 0.5, jev_status: "uncertain",
+    score_source: "jev" }]);
+  await vm.runInContext("scanTab(1, 'https://ordinary.example/', 'quick')", w.context);
+  assert.equal(w.tab.url, "https://ordinary.example/");
+});
+
+test("a cloud approval overrides a Jev flag", async () => {
+  const w = worker([{ verdict: "safe", score: 5, jev_probability: 0.95, jev_status: "suspicious",
+    score_source: "jev", review: { status: "allow", reason: "Reviewed remotely", evidence: [] } }]);
+  await vm.runInContext("scanTab(1, 'https://ordinary.example/', 'quick')", w.context);
+  assert.equal(w.tab.url, "https://ordinary.example/");
+});
+
+test("a Jev flag never redirects away from the proxy checking page", async () => {
+  const w = worker([{ target_url: "https://original.example/", verdict: "dangerous", score: 5,
+    jev_probability: 0.95, jev_status: "suspicious", score_source: "jev" }]);
+  w.tab.url = "https://blocked.example.com/_trustline/check/existing-token";
+  await vm.runInContext(`scanTab(1, '${w.tab.url}', 'quick')`, w.context);
+  assert.equal(w.tab.url, "https://blocked.example.com/_trustline/check/existing-token");
+});
+
 test("a successful Deep scan releases a previously inconclusive proxy checking tab", async () => {
   const w = worker([{ target_url: "https://original.example/article", score: 97, verdict: "safe",
     review: { status: "allow", reason: "Retried cloud review succeeded", evidence: [] } }]);

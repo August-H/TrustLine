@@ -46,8 +46,10 @@ Base URL: `http://127.0.0.1:8765`. Set `serve --api-port PORT` and update
 
 - `GET /health`: daemon version and whether cloud review is configured.
 - `POST /v1/analyze`: JSON `{ "url": "https://example.com/", "mode": "quick" }`.
-  Returns `score`, `verdict`, `verified`, `score_source`, `jev_probability`, `reasons`
-  and `target_url`. Use `"mode": "deep"` to also receive a `review` containing a
+  Returns `score`, `verdict`, `verified`, `score_source`, `jev_probability`,
+  `jev_status`, `reasons` and `target_url`. `jev_status` is Jev's own result
+  (`suspicious`, `uncertain`, `not_flagged`, `unscored` or `skipped`) and is kept
+  even when a cloud review changes `verdict`. Use `"mode": "deep"` to also receive a `review` containing a
   job `token`, `status`, `reason` and `evidence`.
 - `GET /v1/reviews/TOKEN`: poll `pending`, `allow`, `block`, or `inconclusive`.
 
@@ -58,7 +60,10 @@ No API keys or ChatGPT tokens are returned to the extension.
 
 ## Warning page and preview
 
-Dangerous verdicts redirect to the bundled `warning.html`. The user can go back,
+When Jev flags a site as suspicious, the tab redirects to the bundled
+`warning.html` in its "This site looks suspicious" form. A completed cloud review
+overrides that flag. Other dangerous verdicts, such as a cloud review block, show
+the same page in its "This site may be dangerous" form. The user can go back,
 expand the reasons, or acknowledge the risks, wait five seconds, manually type
 the hostname, and allow that hostname for the browser session. This override is
 extension-only and cannot override a daemon block or alter its SQLite database.

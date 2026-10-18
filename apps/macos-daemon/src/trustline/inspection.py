@@ -66,6 +66,34 @@ def normalize_origin(value: str) -> tuple[str, str]:
     return f"{parsed.scheme}://{authority}", host
 
 
+DIGIT_LETTERS = (
+    {"0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b"},
+    {"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b"},
+)
+
+
+def lookalike_readings(hostname: str) -> list[str]:
+    """Spellings a reader might mistake the hostname for, excluding its top-level domain."""
+    try:
+        ipaddress.ip_address(hostname)
+        return []
+    except ValueError:
+        pass
+    name = hostname.rsplit(".", 1)[0]
+    bases = {"".join(swaps.get(c, c) for c in name) for swaps in DIGIT_LETTERS}
+    bases |= {base.replace("rn", "m").replace("vv", "w") for base in bases}
+    variants = set()
+    for base in bases:
+        for i, c in enumerate(base):
+            if c in "li":
+                variants.add(base[:i] + ("i" if c == "l" else "l") + base[i + 1:])
+            if i and c.isalpha() and c == base[i - 1]:
+                variants.add(base[:i] + base[i + 1:])
+    # Whole-name substitutions first, so a long hostname cannot crowd them out.
+    readings = sorted(bases) + sorted(variants - bases)
+    return [reading for reading in dict.fromkeys(readings) if reading != name][:24]
+
+
 def is_local_host(host: str) -> bool:
     try:
         return not ipaddress.ip_address(host).is_global
@@ -192,6 +220,25 @@ class JevClient:
                 },
             },
         }
+        readings = lookalike_readings(observation.hostname)
+        if readings:
+            payload["questions"]["lookalike"] = {
+                "type": "noul",
+                "instructions": {
+                    "question": ("Is any entry in `readings` the correct spelling of a well-known "
+                                 "brand, company, or product name that `hostname` itself spells "
+                                 "differently?"),
+                    "readings": readings,
+                    "about_readings": ("Code generated these by undoing common character "
+                                       "substitutions in `hostname`. Most are meaningless."),
+                },
+                "criteria": {
+                    "true": ("A reading is a well-known name and `hostname` misspells it, so it "
+                             "imitates that name."),
+                    "false": ("No reading is a well-known name, or `hostname` already spells that "
+                              "name correctly, including brands whose real names contain digits."),
+                },
+            }
         request = Request(JEV_ENDPOINT, data=json.dumps(payload).encode("utf-8"), headers={
             "Authorization": "Bearer " + self.api_key,
             "Content-Type": "application/json",
@@ -201,15 +248,20 @@ class JevClient:
                 raw = response.read(65537)
             if len(raw) > 65536:
                 raise JevError("Jev response exceeded the size limit")
-            answer = json.loads(raw)["answers"]["suspicious"]
-            probability = answer["noul"]
-            if answer["type"] != "noul" or type(probability) not in (int, float):
-                raise ValueError
-            if not math.isfinite(probability) or not 0 <= probability <= 1:
-                raise ValueError
+            answers = json.loads(raw)["answers"]
+            probabilities = []
+            for question in payload["questions"]:
+                answer = answers[question]
+                probability = answer["noul"]
+                if answer["type"] != "noul" or type(probability) not in (int, float):
+                    raise ValueError
+                if not math.isfinite(probability) or not 0 <= probability <= 1:
+                    raise ValueError
+                probabilities.append(float(probability))
             self._retry_at = 0.0
             self._retry_delay = 1.0
-            return float(probability)
+            # Either signal alone is enough to treat the origin as deceptive.
+            return max(probabilities)
         except HTTPError as error:
             status = error.code
             if status in {429, 529}:
