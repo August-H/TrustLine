@@ -229,26 +229,114 @@ function buildFindings() {
 // page still fits on one screen.
 const VISIBLE_FINDINGS = 2;
 
-const RISKS = [
-  {
-    id: "credential",
-    icon: "M7 11V7a5 5 0 0 1 10 0v4M5 11h14v10H5z",
-    title: "Stolen Passwords & Accounts",
-    summary: "Scammers may use fake sign-in boxes on this page to steal your passwords and lock you out of your accounts.",
-  },
-  {
-    id: "financial",
-    icon: "M3 6h18v12H3zM3 10h18M7 15h4",
-    title: "Money & Credit Card Theft",
-    summary: "This site may trick you into entering credit card or bank details to steal your money.",
-  },
-  {
-    id: "malware",
-    icon: "M3 4h18v12H3zM8 20h8M12 16v4M12 7v4M12 13.5v.01",
-    title: "Computer Viruses & Scams",
-    summary: "Visiting this page could install harmful software on your computer or freeze your screen with fake virus alerts.",
-  },
+const ICONS = {
+  account: "M7 11V7a5 5 0 0 1 10 0v4M5 11h14v10H5z",
+  money: "M3 6h18v12H3zM3 10h18M7 15h4",
+  computer: "M3 4h18v12H3zM8 20h8M12 16v4M12 7v4M12 13.5v.01",
+};
+
+// Shown when there is no Deep scan to go on: the general risks of a flagged site.
+const GENERAL_RISKS = [
+  { icon: ICONS.account, tone: "risk", title: "Stolen Passwords & Accounts",
+    summary: "Scammers may use fake sign-in boxes on this page to steal your passwords and lock you out of your accounts." },
+  { icon: ICONS.money, tone: "risk", title: "Money & Credit Card Theft",
+    summary: "This site may trick you into entering credit card or bank details to steal your money." },
+  { icon: ICONS.computer, tone: "risk", title: "Computer Viruses & Scams",
+    summary: "Visiting this page could install harmful software on your computer or freeze your screen with fake virus alerts." },
 ];
+
+// A safe score without a Deep scan: everyday habits, not scam warnings.
+const SAFE_HABITS = [
+  { icon: ICONS.account, tone: "clear", title: "Signing in",
+    summary: "If this site asks for a password, check the address above first and only type it if it's the site you meant to visit." },
+  { icon: ICONS.money, tone: "clear", title: "Paying",
+    summary: "Only enter card details on checkout pages you reached yourself, never from a pop-up or a message." },
+  { icon: ICONS.computer, tone: "clear", title: "Downloads",
+    summary: "Open only files you were expecting. Real sites don't ask you to install anything just to see a page." },
+];
+
+/* ------------------------------------------------------ deep scan context */
+
+const scanMode = params.get("mode");
+const review = params.get("review"); // "allow" | "block" | "inconclusive"
+const pageFeatures = (() => {
+  try {
+    const value = JSON.parse(params.get("features") ?? "null");
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
+})();
+// Only a finished cloud review that actually looked at the page can describe it.
+const deepScanned = scanMode === "deep" && (review === "allow" || review === "block") && pageFeatures !== null;
+
+function impersonationFound() {
+  return parseReasons().some((r) => /impersonat|pretend|look-?alike|copies|fake (copy|version)/i.test(r));
+}
+
+// Plain-English cards built from what the Deep scan saw on the page.
+function deepScanCards(siteLooksSafe) {
+  const f = pageFeatures;
+  const site = domain || "this site";
+  if (siteLooksSafe) {
+    return [
+      f.sign_in
+        ? { icon: ICONS.account, tone: f.external_form ? "risk" : "clear", title: "Sign-in looks normal",
+            summary: f.external_form
+              ? `${site} has a sign-in box that sends your details to a different website. Check before typing a password.`
+              : `${site} has a sign-in box that keeps your details on its own site, as expected.` }
+        : { icon: ICONS.account, tone: "clear", title: "No password asked for",
+            summary: "TrustLine didn't see this page ask for a password or account details." },
+      f.payment
+        ? { icon: ICONS.money, tone: "clear", title: "Payment form looks normal",
+            summary: "The page has a place for card details on its own site, and TrustLine found no tricks around it." }
+        : { icon: ICONS.money, tone: "clear", title: "No payment asked for",
+            summary: "Nothing TrustLine looked at asked for card or bank details." },
+      f.downloads
+        ? { icon: ICONS.computer, tone: "clear", title: "Has files to download",
+            summary: "The page offers files to download. Open only ones you were expecting." }
+        : { icon: ICONS.computer, tone: "clear", title: "No downloads",
+            summary: "TrustLine didn't see any programs or files to download." },
+    ];
+  }
+  const impersonating = impersonationFound();
+  return [
+    f.sign_in
+      ? { icon: ICONS.account, tone: "risk", title: f.external_form ? "Sends your password elsewhere" : "Asks for your password",
+          summary: f.external_form
+            ? "This page asks you to sign in, then sends what you type to a different website. That's how passwords get stolen."
+            : "This page asks you to sign in. On a site like this, the sign-in box may be a fake meant to steal your password." }
+      : impersonating
+        ? { icon: ICONS.account, tone: "risk", title: "Pretends to be someone else",
+            summary: "This page copies a company you may trust, so you'll believe what it asks you to do." }
+        : { icon: ICONS.account, tone: "clear", title: "No sign-in box seen",
+            summary: "TrustLine didn't see a password box, but the site may ask for one on a later page." },
+    f.payment
+      ? { icon: ICONS.money, tone: "risk", title: f.external_form ? "Sends card details elsewhere" : "Asks for card details",
+          summary: f.external_form
+            ? "This page asks for card or bank details and sends them to a different website. Don't enter them."
+            : "This page asks for card or bank details. Don't enter them here." }
+      : { icon: ICONS.money, tone: "clear", title: "No payment form seen",
+          summary: "TrustLine didn't see a payment form, but scam sites often ask for money later." },
+    f.downloads
+      ? { icon: ICONS.computer, tone: "risk", title: "Offers a download",
+          summary: "This page offers a file to download. It could harm your computer if you open it." }
+      : { icon: ICONS.computer, tone: "clear", title: "No downloads seen",
+          summary: "TrustLine didn't see any files to download on this page." },
+  ];
+}
+
+function riskContent() {
+  const siteLooksSafe = verdict === "safe" || review === "allow";
+  if (deepScanned) {
+    return {
+      heading: siteLooksSafe ? "What TrustLine's Deep scan found" : "What TrustLine found on this page",
+      cards: deepScanCards(siteLooksSafe),
+    };
+  }
+  if (verdict === "safe") return { heading: "Staying safe on this site", cards: SAFE_HABITS };
+  return { heading: "What could happen if you continue", cards: GENERAL_RISKS };
+}
 
 function renderHeader() {
   document.body.dataset.status = verdict;
@@ -388,8 +476,10 @@ function renderFindings(findings) {
 
 function renderRisks() {
   const svgNs = "http://www.w3.org/2000/svg";
+  const { heading, cards } = riskContent();
+  document.getElementById("risks-title").textContent = heading;
   document.getElementById("risks").replaceChildren(
-    ...RISKS.map((risk) => {
+    ...cards.map((risk) => {
       const svg = document.createElementNS(svgNs, "svg");
       svg.setAttribute("viewBox", "0 0 24 24");
       svg.setAttribute("aria-hidden", "true");
@@ -397,7 +487,7 @@ function renderRisks() {
       const path = document.createElementNS(svgNs, "path");
       path.setAttribute("d", risk.icon);
       svg.append(path);
-      return el("li", { class: "risk" }, [
+      return el("li", { class: "risk", dataset: { tone: risk.tone } }, [
         el("div", { class: "risk-head" }, [svg, el("h3", { text: risk.title })]),
         el("p", { text: risk.summary }),
       ]);

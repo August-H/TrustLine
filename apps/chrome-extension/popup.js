@@ -116,7 +116,7 @@ function render() {
     el.pill.title = `Connected to ${state.daemon.baseUrl}${state.daemon.version ? ` (v${state.daemon.version})` : ""}`;
   } else {
     el.pill.dataset.state = "mock";
-    el.pillLabel.textContent = "Daemon offline";
+    el.pillLabel.textContent = "Offline";
     el.pill.title = `Daemon unreachable at ${state.daemon.baseUrl}. No trust score is available.`;
   }
 

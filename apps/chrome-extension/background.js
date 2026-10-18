@@ -283,6 +283,10 @@ function warningPageUrl(targetUrl, result, reason) {
   const reasons = [...(reason ? [reason] : []), ...(result?.reasons ?? [])];
   if (reasons.length) page.searchParams.set("reasons", JSON.stringify([...new Set(reasons)]));
   if (result?.source) page.searchParams.set("source", result.source);
+  // Lets the warning page describe what a Deep scan actually saw on the site.
+  if (result?.mode) page.searchParams.set("mode", result.mode);
+  if (result?.review?.status) page.searchParams.set("review", result.review.status);
+  if (result?.review?.page_features) page.searchParams.set("features", JSON.stringify(result.review.page_features));
   if (result?.scannedAt) page.searchParams.set("ts", String(result.scannedAt));
   return page.toString();
 }

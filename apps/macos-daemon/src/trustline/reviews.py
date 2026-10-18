@@ -39,6 +39,7 @@ class Review:
     reason: str = "Checking the website in an isolated cloud browser."
     evidence: list[str] = field(default_factory=list)
     page_probability: float | None = None
+    page_features: dict[str, bool] | None = None
     task: asyncio.Task | None = None
 
 
@@ -148,9 +149,14 @@ class ReviewManager:
             if page_probability is not None and (type(page_probability) is not float
                                                  or not 0 <= page_probability <= 1):
                 raise ValueError("Invalid page probability")
+            features = result.get("page_features")
+            if features is not None and (not isinstance(features, dict)
+                                         or not all(type(v) is bool for v in features.values())):
+                raise ValueError("Invalid page features")
             row.status, row.reason = status, reason[:600]
             row.evidence = [item[:400] for item in evidence[:6]]
             row.page_probability = page_probability
+            row.page_features = features
             if status == "allow" and has_private_parts:
                 row.status = "inconclusive"
                 row.reason = "URL parameters were withheld for privacy. A check of the page without them cannot approve this link."
@@ -176,7 +182,7 @@ class ReviewManager:
         if row is None:
             return None
         return {"status": row.status, "reason": row.reason, "evidence": row.evidence,
-                "page_probability": row.page_probability,
+                "page_probability": row.page_probability, "page_features": row.page_features,
                 "using_chatgpt_plan": self.reviewer is not None}
 
     def close(self):
