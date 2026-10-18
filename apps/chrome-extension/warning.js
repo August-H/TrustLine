@@ -514,7 +514,16 @@ function renderRisks() {
 
 /* ------------------------------------------------------------ navigation */
 
-document.getElementById("back").addEventListener("click", () => {
+const backButton = document.getElementById("back");
+// On a safe site the report is informational, so the button returns to it.
+const returnsToSite = verdict === "safe" && Boolean(safeTarget);
+if (returnsToSite) backButton.textContent = "Return to Site";
+
+backButton.addEventListener("click", () => {
+  if (returnsToSite) {
+    location.replace(safeTarget);
+    return;
+  }
   // From the scanning screen the blocked site never entered history, so one
   // step back is the page the person came from.
   const steps = params.get("via") === "scan" ? 1 : 2;
