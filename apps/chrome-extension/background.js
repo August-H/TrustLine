@@ -14,6 +14,9 @@ const CONFIG = {
   DEEP_SCAN_TIMEOUT_MS: 110_000,
   REVIEW_POLL_MS: 1_000,
   RESULT_TTL_MS: 5 * 60_000,
+  // How long a site may load after an unconfirmed check (daemon offline, or
+  // blocking turned off) before the next visit is checked again.
+  NAVIGATION_PASS_MS: 60_000,
   // Set to the hosted warning landing page (e.g. "https://trustline.app/warning").
   // When empty, the bundled warning.html is used.
   WARNING_PAGE_URL: "",
@@ -246,6 +249,49 @@ async function maybeBlock(tabId, result) {
   await chrome.tabs.update(tabId, { url: warningPageUrl(result.targetUrl || result.url, result) });
 }
 
+/* ------------------------------------------------- pre-navigation checks */
+
+// A session rule sends every top-level http(s) navigation to scanning.html
+// before any request reaches the site. Domains already cleared this session,
+// allowlisted by the person, or given a short pass are excluded from it.
+const INTERCEPT_RULE_ID = 1;
+const NEVER_INTERCEPT = ["localhost", "127.0.0.1"];
+
+async function syncInterceptRule() {
+  const dnr = chrome.declarativeNetRequest;
+  if (!dnr?.updateSessionRules) return;
+  const settings = await getSettings();
+  const { cleared = [], passes = {} } = await chrome.storage.session.get(["cleared", "passes"]);
+  const now = Date.now();
+  const livePasses = Object.fromEntries(Object.entries(passes).filter(([, until]) => until > now));
+  if (Object.keys(livePasses).length !== Object.keys(passes).length) {
+    await chrome.storage.session.set({ passes: livePasses });
+  }
+  const excluded = [...new Set([...NEVER_INTERCEPT, ...(await getAllowlist()), ...cleared, ...Object.keys(livePasses)])]
+    .filter(Boolean);
+  const addRules = settings.autoScan ? [{
+    id: INTERCEPT_RULE_ID,
+    priority: 1,
+    action: { type: "redirect", redirect: { regexSubstitution: `${chrome.runtime.getURL("scanning.html")}?url=\\0` } },
+    condition: { regexFilter: "^https?://.*", resourceTypes: ["main_frame"], excludedRequestDomains: excluded },
+  }] : [];
+  await dnr.updateSessionRules({ removeRuleIds: [INTERCEPT_RULE_ID], addRules });
+}
+
+// Safe verdicts clear the domain for the rest of the browser session. Anything
+// else gets a short pass so forwarding to it doesn't loop back to the scanner.
+async function letThrough(domain, { durable }) {
+  if (durable) {
+    const { cleared = [] } = await chrome.storage.session.get("cleared");
+    if (!cleared.includes(domain)) await chrome.storage.session.set({ cleared: [...cleared, domain] });
+  } else {
+    const { passes = {} } = await chrome.storage.session.get("passes");
+    await chrome.storage.session.set({ passes: { ...passes, [domain]: Date.now() + CONFIG.NAVIGATION_PASS_MS } });
+    setTimeout(() => syncInterceptRule().catch(() => {}), CONFIG.NAVIGATION_PASS_MS + 1000);
+  }
+  await syncInterceptRule();
+}
+
 /* ------------------------------------------------------------ action icon */
 
 const SHIELD_PATH = "M12 2 4 5v6c0 5.1 3.4 9.4 8 11 4.6-1.6 8-5.9 8-11V5l-8-3Z";
@@ -297,14 +343,23 @@ chrome.runtime.onInstalled.addListener(async () => {
   const { settings } = await chrome.storage.local.get("settings");
   await chrome.storage.local.set({ settings: { ...DEFAULT_SETTINGS, ...(settings || {}) } });
   await applyActionState(undefined, "idle");
+  await syncInterceptRule();
 });
 
-chrome.runtime.onStartup.addListener(() => applyActionState(undefined, "idle"));
+chrome.runtime.onStartup.addListener(async () => {
+  await applyActionState(undefined, "idle");
+  await syncInterceptRule();
+});
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (changeInfo.url) {
-    await chrome.storage.session.remove(resultKey(tabId));
-    await applyActionState(tabId, "idle");
+    // scanNavigation stores its result under the destination before forwarding;
+    // keep that one so the page isn't scanned a second time.
+    const { [resultKey(tabId)]: kept } = await chrome.storage.session.get(resultKey(tabId));
+    if (kept?.url !== changeInfo.url) {
+      await chrome.storage.session.remove(resultKey(tabId));
+      await applyActionState(tabId, "idle");
+    }
   }
   if (changeInfo.status !== "loading" || !isScannableUrl(tab.url)) return;
 
@@ -351,7 +406,30 @@ const handlers = {
   async setSettings({ patch }) {
     const next = { ...(await getSettings()), ...patch };
     await chrome.storage.local.set({ settings: next });
+    await syncInterceptRule();
     return next;
+  },
+
+  // Called by scanning.html with the destination it is holding.
+  async scanNavigation({ url }, sender) {
+    if (!isScannableUrl(url)) throw new Error("Invalid destination");
+    const tabId = sender.tab?.id;
+    const settings = await getSettings();
+    const result = await analyzeUrl(url, "quick");
+    if (tabId !== undefined) {
+      await chrome.storage.session.set({ [resultKey(tabId)]: result });
+      await applyActionState(tabId, result.verdict);
+    }
+    // With the daemon offline there is no verdict to act on; let the page load
+    // rather than stopping every site, and check it again on the next visit.
+    const checked = result.source === "daemon";
+    if (checked && result.verdict !== "safe" && settings.blockDangerous) {
+      const warning = new URL(warningPageUrl(url, result));
+      warning.searchParams.set("via", "scan");
+      return { action: "warn", verdict: result.verdict, url: warning.href };
+    }
+    await letThrough(hostnameOf(url), { durable: checked && result.verdict === "safe" });
+    return { action: "proceed", verdict: result.verdict, url };
   },
 
   async testRedirect({ tabId }) {
@@ -369,6 +447,7 @@ const handlers = {
     const allowlist = await getAllowlist();
     if (!allowlist.includes(domain)) allowlist.push(domain);
     await chrome.storage.session.set({ allowlist });
+    await syncInterceptRule();
     if (sender.tab?.id !== undefined) await chrome.tabs.update(sender.tab.id, { url });
     return { domain };
   },

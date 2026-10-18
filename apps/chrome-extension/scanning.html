@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TrustLine is checking a site</title>
+    <link rel="stylesheet" href="fonts/fonts.css" />
+    <!-- Tokens, banner and address styles are shared with the warning page. -->
+    <link rel="stylesheet" href="warning.css" />
+    <link rel="stylesheet" href="scanning.css" />
+  </head>
+  <body data-status="scanning">
+    <header class="band">
+      <div class="band-inner">
+        <p class="brand">
+          <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2 4 5v6c0 5.1 3.4 9.4 8 11 4.6-1.6 8-5.9 8-11V5l-8-3Z" />
+          </svg>
+          TrustLine
+        </p>
+
+        <div class="band-body">
+          <svg class="band-icon" data-theme="scanning" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2 4 5v6c0 5.1 3.4 9.4 8 11 4.6-1.6 8-5.9 8-11V5l-8-3Z" />
+            <path class="scan-sweep" d="M7 10.5h10" />
+          </svg>
+          <h1 id="title">TrustLine is checking this site…</h1>
+          <button type="button" class="go-back cancel" id="cancel">Cancel &amp; go back</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="wrap scan-wrap">
+      <section class="address" aria-labelledby="address-label">
+        <p class="address-label" id="address-label">You are heading to</p>
+        <p class="address-text" id="domain">unknown site</p>
+      </section>
+
+      <div
+        class="scan-progress"
+        id="progress"
+        role="progressbar"
+        aria-labelledby="title"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow="0"
+      >
+        <div class="scan-progress-fill" id="progress-fill"></div>
+      </div>
+
+      <ol class="scan-steps" id="steps" aria-live="polite">
+        <li class="scan-step" data-state="active">
+          <span class="scan-step-mark" aria-hidden="true"></span>
+          Checking if the web address is real
+        </li>
+        <li class="scan-step" data-state="pending">
+          <span class="scan-step-mark" aria-hidden="true"></span>
+          Looking for known scam patterns
+        </li>
+        <li class="scan-step" data-state="pending">
+          <span class="scan-step-mark" aria-hidden="true"></span>
+          Calculating TrustLine Safety Score
+        </li>
+      </ol>
+    </main>
+    <script src="address.js"></script>
+    <script src="scanning.js"></script>
+  </body>
+</html>
