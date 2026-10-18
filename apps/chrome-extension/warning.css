@@ -141,7 +141,9 @@ body[data-status="safe"] .go-back:hover { background: var(--go-tint); }
 .address-text {
   margin-top: 2px;
   font-family: var(--mono);
-  font-size: clamp(24px, calc((min(100vw, 1220px) - 64px - 386px) / (var(--chars, 24) * 0.68)), 56px);
+  /* --side is the override column's width; safe reports have none. */
+  font-size: clamp(24px, calc((min(100vw, 1220px) - 64px - var(--side, 386px)) / (var(--chars, 24) * 0.68)),
+    var(--address-max, 56px));
   font-weight: 700;
   line-height: 1.2;
   overflow-wrap: anywhere;
@@ -402,6 +404,23 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
 .danger:hover:not(:disabled) { background: var(--stop-tint); }
 .danger:disabled { border-color: var(--rule-strong); color: var(--muted); cursor: not-allowed; }
 
+/* ----------------------------------------------------------- safe report */
+
+/* A safe verdict needs no override gate, so the report takes the full width
+   and gets more room between sections. */
+body[data-status="safe"] { --side: 0px; --address-max: 64px; }
+body[data-status="safe"] .col-side { display: none; }
+body[data-status="safe"] .grid { grid-template-columns: minmax(0, 1fr); margin-top: 22px; }
+body[data-status="safe"] .col-main { gap: 26px; }
+body[data-status="safe"] .wrap { padding-bottom: 24px; }
+body[data-status="safe"] .address { padding-bottom: 16px; }
+body[data-status="safe"] .finding { padding: 8px 0; }
+body[data-status="safe"] .finding-title { max-width: 80ch; }
+body[data-status="safe"] .risks { margin-top: 12px; }
+body[data-status="safe"] .risk { padding: 0 32px; }
+body[data-status="safe"] .risk:first-child { padding-left: 0; }
+body[data-status="safe"] .score { padding-top: 16px; }
+
 /* ------------------------------------------------------------ responsive */
 
 @media (max-width: 1020px) {
@@ -415,6 +434,8 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
   .risks { grid-template-columns: 1fr; gap: 14px; }
   .risk, .risk:first-child { padding: 0; }
   .risk + .risk { border-left: 0; padding-top: 14px; border-top: 1px solid var(--rule); }
+  body[data-status="safe"] .risk { padding: 0; }
+  body[data-status="safe"] .risk + .risk { padding-top: 14px; }
 }
 
 @media (max-width: 560px) {
