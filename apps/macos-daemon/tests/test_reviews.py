@@ -12,8 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from trustline.inspection import JevError
 from trustline.reviews import ReviewManager, review_url
 from trustline.remote import (
-    HTML_LIMIT, CloudflareBrowser, RemoteError, RemoteReviewer, compact_html, page_features,
-    page_state, public_url,
+    HTML_LIMIT, CloudflareBrowser, RemoteError, RemoteReviewer, allowed_domains, compact_html, page_features,
+    page_state, public_url, same_site_redirect,
 )
 
 
@@ -232,6 +232,41 @@ class RemoteReviewerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("html", first)
         self.assertNotIn("html", second)
 
+    def test_redirects_may_stay_on_the_same_site_but_not_leave_it(self):
+        for before, after in [("https://siemens.com", "https://www.siemens.com"),
+                              ("http://example.org", "https://example.org"),
+                              ("https://www.github.com", "https://github.com"),
+                              ("https://shop.example", "https://eu.shop.example")]:
+            self.assertTrue(same_site_redirect(before, after), after)
+        for before, after in [("https://siemens.com", "https://siemens.com.evil.example"),
+                              ("https://bank.example", "https://example"),
+                              ("https://example.org", "http://example.org"),
+                              ("https://login.example", "https://other.example")]:
+            self.assertFalse(same_site_redirect(before, after), after)
+        self.assertEqual(allowed_domains("siemens.com"), ["siemens.com", "*.siemens.com"])
+        self.assertEqual(allowed_domains("www.github.com"),
+                         ["www.github.com", "*.www.github.com", "github.com", "*.github.com"])
+
+    async def test_cloudflare_browser_follows_a_same_site_redirect_only(self):
+        for landed, ok in [("https://www.siemens.com/en-us/", True), ("https://phish.example/", False)]:
+            page = Mock(on=Mock(), goto=AsyncMock(return_value=Mock(status=200, headers={})), url=landed)
+            context = Mock(set_default_timeout=Mock(), set_default_navigation_timeout=Mock(), route=AsyncMock(),
+                           route_web_socket=AsyncMock(), new_page=AsyncMock(return_value=page), on=Mock())
+            connected = Mock(new_context=AsyncMock(return_value=context), close=AsyncMock())
+            runtime = Mock(chromium=Mock(connect_over_cdp=AsyncMock(return_value=connected)), stop=AsyncMock())
+            browser = CloudflareBrowser("a" * 32, "synthetic-cloudflare-token")
+            browser.check_public_host = AsyncMock(return_value=True)
+            with patch("playwright.async_api.async_playwright", return_value=Mock(start=AsyncMock(return_value=runtime))), \
+                    patch("trustline.remote.request_json", return_value={"sessionId": "12345678-abcd-1234-abcd-123456789abc"}):
+                if ok:
+                    await browser.start("https://siemens.com/")
+                    self.assertEqual(browser.initial_origin, "https://www.siemens.com")
+                    self.assertEqual(browser.initial_url, "https://siemens.com/")
+                else:
+                    with self.assertRaises(RemoteError):
+                        await browser.start("https://siemens.com/")
+                await browser.close()
+
     async def test_cloudflare_browser_rejects_forms_private_networks_and_cross_origin_navigation(self):
         browser = CloudflareBrowser("a" * 32, "synthetic-token")
         browser.initial_origin = "https://ordinary.example"
@@ -250,7 +285,8 @@ class RemoteReviewerTests(unittest.IsolatedAsyncioTestCase):
                 await browser.act(action)
 
     async def test_cloudflare_uses_guarded_remote_cdp_and_deletes_session_without_local_launch(self):
-        page = Mock(on=Mock(), goto=AsyncMock(return_value=Mock(status=200, headers={})))
+        page = Mock(on=Mock(), goto=AsyncMock(return_value=Mock(status=200, headers={})),
+                    url="https://ordinary.example/article")
         context = Mock(set_default_timeout=Mock(), set_default_navigation_timeout=Mock(),
                        route=AsyncMock(), route_web_socket=AsyncMock(), new_page=AsyncMock(return_value=page), on=Mock())
         connected = Mock(new_context=AsyncMock(return_value=context), close=AsyncMock())
