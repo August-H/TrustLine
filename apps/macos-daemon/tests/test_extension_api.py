@@ -440,7 +440,7 @@ class ExtensionDebugHTTPTests(AsyncHTTPTestCase):
                    headers={"Content-Type": "application/json"})
         state = json.loads(self.fetch("/v1/debug/state").body)
         self.assertEqual(state["settings"]["navigation_confidence"], 0.85)
-        self.assertEqual(state["settings"]["reasoning_effort"], "high")
+        self.assertEqual(state["settings"]["reasoning_effort"], "medium")
         self.assertEqual(state["jev"]["recent"][0]["origin"], "https://ordinary.example")
         self.assertEqual(state["jev"]["recent"][0]["probability"], 0.27)
         self.assertEqual(state["reviews"]["total"], 1)

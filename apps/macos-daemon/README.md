@@ -72,7 +72,7 @@ a link by screenshot coordinates, navigate within the same origin, and finish
 with `allow`, `block`, or `inconclusive`. Selecting a link resolves its URL and
 performs guarded navigation, rather than executing an arbitrary button handler.
 This is a custom browser agent, with the model hosted by OpenAI and the browser
-hosted by Cloudflare. Every request asks for high reasoning effort
+hosted by Cloudflare. Every request asks for medium reasoning effort
 (`REASONING_EFFORT` in `chatgpt.py`).
 
 ```sh
@@ -197,11 +197,16 @@ form submissions, typing, and arbitrary script execution by the model disabled.
 Fixed extraction code reads the DOM. Cloudflare session guardrails permit the
 target hostname, its subdomains, and Cloudflare's common CDN set. Additional
 client-side checks deny non-public resolved IPs, unusual ports, non-GET/HEAD
-requests, and cross-origin navigations. This is defense in depth, not a guarantee
+requests, and cross-origin navigations except same-site server redirects.
+Redirect destinations are validated after the new document commits, rather than
+while the browser still reports the previous page's address.
+This is defense in depth, not a guarantee
 against every browser exploit or DNS rebinding scenario.
 
 The worker permits at most six model actions and 90 seconds including queue time,
-with one review running and at most eight pending. Remote sessions close in a
+with one review running and at most eight pending. Asset requests are counted for
+diagnostics without a request-count cap, so images, scripts and repeated page
+loads cannot exhaust a shared navigation budget. Remote sessions close in a
 `finally` block and also have a short Cloudflare keep-alive timeout. Model input,
 screenshots, reasons, and evidence remain in memory. Successful page approvals
 are saved in SQLite as described below. Model/provider data handling still

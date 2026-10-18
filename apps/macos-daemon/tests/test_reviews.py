@@ -311,6 +311,43 @@ class RemoteReviewerTests(unittest.IsolatedAsyncioTestCase):
         await browser.route(Mock(request=request, continue_=AsyncMock(), abort=AsyncMock()))
         self.assertEqual(browser.blocked, ["The page itself was blocked by the inspection policy"])
 
+    async def test_asset_requests_cannot_exhaust_the_main_navigation_budget(self):
+        browser = CloudflareBrowser("a" * 32, "synthetic-token")
+        browser.initial_origin = "https://ordinary.example"
+        browser.check_public_host = AsyncMock(return_value=True)
+        browser.page = Mock(main_frame=object())
+        for count in [150, 1500, 5000]:
+            for navigation, kind in [(False, "script"), (True, "document")]:
+                browser.requests = count
+                request = Mock(url="https://ordinary.example/", method="GET", resource_type=kind,
+                    frame=browser.page.main_frame, is_navigation_request=Mock(return_value=navigation))
+                route = Mock(request=request, continue_=AsyncMock(), abort=AsyncMock())
+                await browser.route(route)
+                route.continue_.assert_awaited_once()
+                route.abort.assert_not_awaited()
+                self.assertEqual(browser.requests, count + 1)
+        self.assertEqual(browser.blocked, [])
+
+    async def test_only_main_document_server_redirects_may_change_to_a_same_site_origin(self):
+        browser = CloudflareBrowser("a" * 32, "synthetic-token")
+        browser.initial_origin = "https://ordinary.example"
+        browser.check_public_host = AsyncMock(return_value=True)
+        main, iframe = object(), object()
+        browser.page = Mock(main_frame=main)
+        for url, frame, redirected_from, allowed in [
+            ("https://www.ordinary.example/", main, object(), True),
+            ("https://www.ordinary.example/", main, None, False),
+            ("https://www.ordinary.example/", iframe, object(), False),
+            ("https://evil.example/", main, object(), False),
+            ("http://ordinary.example/", main, object(), False),
+        ]:
+            request = Mock(url=url, method="GET", resource_type="document", frame=frame,
+                redirected_from=redirected_from, is_navigation_request=Mock(return_value=True))
+            route = Mock(request=request, continue_=AsyncMock(), abort=AsyncMock())
+            await browser.route(route)
+            self.assertEqual(route.continue_.await_count, int(allowed))
+            self.assertEqual(route.abort.await_count, int(not allowed))
+
     async def test_an_http_to_https_upgrade_on_the_same_host_is_the_same_site(self):
         browser = CloudflareBrowser("a" * 32, "synthetic-token")
         browser.initial_origin = "http://edgetrust.example"
@@ -390,6 +427,19 @@ class RemoteReviewerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((browser.http_status, browser.mitigation), (200, None))
         browser.document_response(response(403, "guardrails"))
         self.assertEqual(len(browser.blocked), 1)
+
+    def test_document_response_before_commit_does_not_read_the_old_page_url(self):
+        browser = CloudflareBrowser("a" * 32, "synthetic-token")
+        browser.initial_origin = "https://ordinary.example"
+        browser.page = Mock(main_frame=object(), url="about:blank")
+        response = Mock(status=200, headers={}, request=Mock(
+            is_navigation_request=Mock(return_value=True), frame=browser.page.main_frame))
+        browser.document_response(response)
+        self.assertEqual(browser.http_status, 200)
+        self.assertEqual(browser.initial_origin, "https://ordinary.example")
+        browser.page.url = "https://www.ordinary.example/"
+        browser.accept_document_origin()
+        self.assertEqual(browser.initial_origin, "https://www.ordinary.example")
 
     async def test_challenge_clears_before_either_model_reads_the_actual_page(self):
         browser = CloudflareBrowser("a" * 32, "synthetic-token")

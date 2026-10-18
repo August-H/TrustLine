@@ -109,7 +109,7 @@ class SubscriptionTests(unittest.TestCase):
         self.assertFalse(payload["store"])
         self.assertTrue(payload["stream"])
         self.assertEqual(payload["model"], MODEL)
-        self.assertEqual(payload["reasoning"], {"effort": "high"})
+        self.assertEqual(payload["reasoning"], {"effort": "medium"})
         self.assertIsInstance(payload["input"], list)
         for forbidden in ["tools", "previous_response_id", "max_output_tokens", "background", "temperature"]:
             self.assertNotIn(forbidden, payload)

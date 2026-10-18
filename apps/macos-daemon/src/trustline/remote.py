@@ -146,6 +146,10 @@ class CloudflareBrowser:
         self.mitigation = response.headers.get("cf-mitigated")
         if self.mitigation == "guardrails" and "Cloudflare blocked a required navigation" not in self.blocked:
             self.blocked.append("Cloudflare blocked a required navigation")
+        # A response arrives before the new document commits. page.url may still
+        # be about:blank or the previous page here; validate it after navigation.
+
+    def accept_document_origin(self):
         # Many sites answer on another origin of the same site (siemens.com ->
         # www.siemens.com/en-us/, http -> https). Inspect where the server sent
         # us, but never follow a redirect to a different site.
@@ -176,6 +180,7 @@ class CloudflareBrowser:
                 # document if an automatic navigation has already followed it.
                 if response and self.http_status is None:
                     self.remember_document_response(response)
+                self.accept_document_origin()
                 return response
             except Error as error:
                 code = browser_error_code(error)
@@ -264,14 +269,20 @@ class CloudflareBrowser:
         try:
             origin, host = normalize_origin(request.url)
             parts = urlsplit(request.url)
-            if (request.method not in {"GET", "HEAD"} or self.requests > 150
+            # Count requests for diagnostics. The review's time/action limits
+            # bound usage; asset-heavy pages must not consume navigation quota.
+            if (request.method not in {"GET", "HEAD"}
                     or parts.username is not None or parts.password is not None
                     or parts.port not in {None, 80, 443}
                     or request.resource_type in {"media", "websocket", "eventsource"}
                     or not await self.check_public_host(host)):
                 raise RemoteError("Request denied")
             if request.is_navigation_request() and not self.same_site(origin):
-                raise RemoteError("Cross-origin navigation denied")
+                # Permit only server redirects to a canonical origin of this
+                # site. Frames and arbitrary cross-origin links stay blocked.
+                if not (self.is_main_document(request) and request.redirected_from is not None
+                        and same_site_redirect(self.initial_origin, origin)):
+                    raise RemoteError("Cross-origin navigation denied")
             await route.continue_()
         except Exception:
             if not self.is_main_document(request):
@@ -306,9 +317,7 @@ class CloudflareBrowser:
             raise RemoteError("The inspection page closed")
         await self.wait_for_site()
         self.stage = "reading the page"
-        current, _ = normalize_origin(self.page.url)
-        if not self.same_site(current):
-            raise RemoteError("The browser left the inspected origin")
+        self.accept_document_origin()
         screenshot = await self.page.screenshot(type="jpeg", quality=55, full_page=False,
                                                timeout=6000)
         if len(screenshot) > 1_500_000:
@@ -550,7 +559,8 @@ class RemoteReviewer:
             debug.log("cloud.page", step=step + 1, url=debug.safe_url(observation.get("url", "")),
                       http_status=observation.get("http_status"), text_chars=len(observation.get("text") or ""),
                       html_chars=len(observation.get("html") or ""), blocked=len(observation.get("policy_blocks") or []),
-                      background_blocked=observation.get("background_requests_blocked", 0))
+                      background_blocked=observation.get("background_requests_blocked", 0),
+                      requests=getattr(browser, "requests", None) if isinstance(getattr(browser, "requests", None), int) else None)
             if not checks and self.jev is not None:
                 # Jev reads the landing page while the model decides its first action.
                 checks.append(asyncio.create_task(self.check_page(observation)))

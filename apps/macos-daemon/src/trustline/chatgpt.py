@@ -23,8 +23,8 @@ RESOURCE = "https://api.openai.com/v1"
 TOKEN_ENDPOINT = AUTH + "/api/accounts/oauth/token"
 PLAN_SCOPE = "chatgpt.tokens.use.direct"
 MODEL = "gpt-6.1-sol"
-# Deep scans always ask the reviewer to reason at high effort.
-REASONING_EFFORT = "high"
+# Deep scans ask the reviewer to reason at medium effort.
+REASONING_EFFORT = "medium"
 
 
 class PlanError(Exception):
