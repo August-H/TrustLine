@@ -64,8 +64,16 @@ function parseReasons() {
   if (single) list.push(single);
   const clean = list
     .filter((r) => typeof r === "string" && r.trim())
-    .map((r) => plainReason(r.trim()).slice(0, 200));
+    .map((r) => clip(plainReason(r.trim()), 220));
   return [...new Set(clean)].slice(0, 10);
+}
+
+// Shorten long scanner notes at a word boundary rather than mid-word.
+function clip(text, max) {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).replace(/[\s,;:.]+$/, "")}…`;
 }
 
 // Older daemons (and results cached before an update) still send the original
@@ -158,8 +166,8 @@ const RULES = [
   },
 ];
 
-const TAG_LABELS = { high: "Danger", network: "Caution", heuristic: "Warning", info: "Note" };
-const TAG_ORDER = { high: 0, network: 1, heuristic: 2, info: 3 };
+const TAG_LABELS = { high: "Danger", network: "Caution", heuristic: "Warning", info: "Note", checked: "Checked" };
+const TAG_ORDER = { high: 0, network: 1, heuristic: 2, info: 3, checked: 4 };
 
 const fallbackRule = {
   id: "other",
@@ -205,6 +213,10 @@ function buildFindings() {
     { text: params.get("review_reason") || "TrustLine is holding this page because it could not complete the inspection.",
       rule: { tag: "info" } },
   ];
+  // On a safe verdict the scanner's notes describe what it checked and found
+  // fine ("No deceptive payment demand… was observed"). Keyword rules built for
+  // warnings would mislabel them, so show them as checks, in the scanner's order.
+  if (verdict === "safe") return parseReasons().map((text) => ({ text, rule: { tag: "checked" } }));
   const findings = [];
   const seen = new Set();
   for (const text of parseReasons()) {
@@ -356,6 +368,7 @@ function renderHeader() {
     dangerous: "This site may be dangerous",
     undetermined: "Safety undetermined",
   }[status];
+  if (status === "safe") document.getElementById("why-title").textContent = "What TrustLine checked";
   if (undetermined) {
     document.getElementById("why-title").textContent = "The deep scan could not determine this site's safety";
     document.getElementById("override-title").textContent = "Continue without a completed scan?";
@@ -479,7 +492,8 @@ function renderFindings(findings) {
   const extra = findings.length - VISIBLE_FINDINGS;
   if (extra > 0) {
     more.hidden = false;
-    more.textContent = `Show ${extra} more reason${extra === 1 ? "" : "s"}`;
+    const noun = verdict === "safe" ? "detail" : "reason";
+    more.textContent = `Show ${extra} more ${noun}${extra === 1 ? "" : "s"}`;
     more.addEventListener("click", () => {
       for (const item of list.children) item.hidden = false;
       more.hidden = true;

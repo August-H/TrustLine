@@ -214,6 +214,7 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
 
 .tag { font-size: 15px; font-weight: 700; color: var(--muted); }
 .tag[data-tag="high"] { color: var(--stop); }
+.tag[data-tag="checked"] { color: var(--go); }
 .tag[data-tag="heuristic"], .tag[data-tag="network"] { color: var(--caution); }
 
 .finding-title { font-weight: 700; }
