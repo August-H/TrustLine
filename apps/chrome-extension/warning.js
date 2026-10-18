@@ -4,8 +4,9 @@ const COOLDOWN_MS = 5_000;
 
 const params = new URLSearchParams(location.search);
 const target = params.get("url") || "";
+const undetermined = params.get("review") === "inconclusive";
 const rawScore = params.get("score");
-const score = rawScore && /^\d{1,3}$/.test(rawScore) ? Math.min(100, Number(rawScore)) : null;
+const score = !undetermined && rawScore && /^\d{1,3}$/.test(rawScore) ? Math.min(100, Number(rawScore)) : null;
 
 // Same thresholds as verdictFromScore() in background.js.
 function verdictFromScore(value) {
@@ -198,6 +199,12 @@ function inspectUrl(u) {
 }
 
 function buildFindings() {
+  if (undetermined) return [
+    { text: "The deep scan could not finish. Safety is undetermined, so no probability or safety score is available.",
+      rule: { tag: "info" } },
+    { text: params.get("review_reason") || "TrustLine is holding this page because it could not complete the inspection.",
+      rule: { tag: "info" } },
+  ];
   const findings = [];
   const seen = new Set();
   for (const text of parseReasons()) {
@@ -339,14 +346,20 @@ function riskContent() {
 }
 
 function renderHeader() {
-  document.body.dataset.status = verdict;
-  const action = { safe: "checked", suspicious: "paused", dangerous: "blocked" }[verdict];
+  const status = undetermined ? "undetermined" : verdict;
+  document.body.dataset.status = status;
+  const action = { safe: "checked", suspicious: "paused", dangerous: "blocked", undetermined: "could not check" }[status];
   document.title = domain ? `TrustLine ${action} ${domain}` : `TrustLine ${action} a site`;
   document.getElementById("title").textContent = {
     safe: "This site looks safe",
     suspicious: "This site looks suspicious",
     dangerous: "This site may be dangerous",
-  }[verdict];
+    undetermined: "Safety undetermined",
+  }[status];
+  if (undetermined) {
+    document.getElementById("why-title").textContent = "The deep scan could not determine this site's safety";
+    document.getElementById("override-title").textContent = "Continue without a completed scan?";
+  }
 }
 
 function renderScore() {
@@ -475,6 +488,10 @@ function renderFindings(findings) {
 }
 
 function renderRisks() {
+  if (undetermined) {
+    document.querySelector(".risks-section").hidden = true;
+    return;
+  }
   const svgNs = "http://www.w3.org/2000/svg";
   const { heading, cards } = riskContent();
   document.getElementById("risks-title").textContent = heading;

@@ -34,7 +34,7 @@ have no `confidence` field, so the daemon uses TypeSafe's Noul conversion,
 | 85%+ confident it is fake | Warning page, no cloud check. |
 | Under 85% confident, trust score 70+ (`PASSING_SCORE`) | Opens with no cloud check, then a prompt appears in the page's top-right corner, under the toolbar icon: "This website may not be safe. **Click Here** to run a deep scan." |
 | Under 85% confident, trust score under 70, or no score | Cloud check on the loading screen. |
-| A money site (crypto, banking, investing, payments, loans or shopping) Jev doesn't recognize as a well-known organization (`RECOGNIZED_THRESHOLD`), at any score | Cloud check on the loading screen, unless Jev is 85%+ confident it is fake. If the cloud can't decide or isn't set up, it opens with the prompt. |
+| A money site (crypto, banking, investing, payments, loans or shopping) Jev doesn't recognize as a well-known organization (`RECOGNIZED_THRESHOLD`), at any score | Cloud check on the loading screen, unless Jev is 85%+ confident it is fake. It opens only if the cloud check approves it; if the check fails, can't decide or isn't set up, the warning page holds it and you choose whether to proceed. |
 
 A cloud block from the last two minutes still applies at any score. The prompt
 (`nudge.js`) is injected with `chrome.scripting` into a closed shadow root, so the
@@ -50,7 +50,8 @@ is, the screen appears, usually for several seconds to a minute, then:
   continues to the destination.
 - **Suspicious or dangerous:** the tab goes to `warning.html` (when blocking is on).
 - **Cloud check inconclusive, timed out or not configured:** the address check
-  decides, as it did before cloud checks were added, and the reasons say so.
+  still controls navigation, including holding unrecognized financial sites.
+  A failed deep scan displays **Safety undetermined**, with no percentage or score.
 - **Daemon offline:** the page loads anyway, and the domain is checked again after
   60 seconds. Without a daemon there is no verdict to act on.
 
@@ -79,8 +80,11 @@ Preview the screen without the daemon: open
   of the Dangerous zone, even when the URL looked fine.
 - Successful page reviews persist for 24 hours in `scanned_pages`, separate from
   permanent trusted domains. These page approvals do not give the whole domain 100.
-- Missing Jev results display `--`. An unavailable cloud review reports a failure or
-  inconclusive result. The installed extension never generates mock scores.
+- Missing Jev results have no score. An unavailable or inconclusive cloud review
+  displays **Safety undetermined** in the popup, page prompt and warning page.
+  It hides address probabilities, numeric scores and the trust meter, including
+  when an earlier address check had a score. The installed extension never
+  generates mock scores.
 
 Auto-scan runs the loading screen's cloud page check before navigation and a quick
 database/Jev check on pages it lets through. Turning it off controls

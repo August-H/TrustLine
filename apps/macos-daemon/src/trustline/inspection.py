@@ -16,6 +16,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from . import debug
+
 
 JEV_ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 # Money-site probability at which the stricter redirect threshold applies.
@@ -236,7 +238,7 @@ PAGE_QUESTION = {
             "irreversible payment such as crypto, gift cards, or wire transfers",
             "Threatens account suspension, fines, or legal action to rush the visitor",
         ],
-        "html": ("`page.html`, when present, is the rendered page's HTML, compacted and possibly "
+        "html": ("`page.html`, when present, is the HTML of the rendered page's <body>, compacted and possibly "
                  "cut short: CSS, SVG drawings and embedded files removed, long scripts shortened. "
                  "Use it for what visitors don't see: hidden text or forms, where forms and links "
                  "really send people, scripts that ask a wallet to connect, approve tokens or sign "
@@ -349,6 +351,21 @@ class JevClient:
         return answers["deceptive"], answers["money"]
 
     def ask(self, state, questions: dict) -> dict[str, float]:
+        started = time.monotonic()
+        try:
+            answers = self._ask(state, questions)
+        except JevError as error:
+            debug.log("jev.error", questions=list(questions), error=str(error),
+                      ms=round((time.monotonic() - started) * 1000))
+            raise
+        debug.log("jev", questions=list(questions), answers={k: round(v, 3) for k, v in answers.items()},
+                  input_tokens=self.last_usage, state_chars=len(json.dumps(state)),
+                  ms=round((time.monotonic() - started) * 1000))
+        return answers
+
+    last_usage = None
+
+    def _ask(self, state, questions: dict) -> dict[str, float]:
         if not self.api_key:
             raise JevError("TYPESAFE_API_KEY is not configured")
         if time.monotonic() < self._retry_at:
@@ -363,7 +380,10 @@ class JevClient:
                 raw = response.read(65537)
             if len(raw) > 65536:
                 raise JevError("Jev response exceeded the size limit")
-            answers = json.loads(raw)["answers"]
+            body = json.loads(raw)
+            answers = body["answers"]
+            usage = body.get("usage")
+            self.last_usage = usage.get("input_tokens") if isinstance(usage, dict) else None
             probabilities = {}
             for question in questions:
                 answer = answers[question]
@@ -426,6 +446,7 @@ class Inspector:
         now = time.monotonic()
         if key in self.cache and self.cache[key][0] > now:
             self.cache.move_to_end(key)
+            debug.log("jev.cached", origin=observation.origin, status=self.cache[key][1]["status"])
             return {**self.cache[key][1], "cached": True}
         try:
             probability, money, recognized = self.jev.assess(observation)

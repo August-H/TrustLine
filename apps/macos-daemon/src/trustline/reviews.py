@@ -8,6 +8,7 @@ import sqlite3
 import time
 from urllib.parse import urlsplit
 
+from . import debug
 from .inspection import is_local_host, normalize_origin
 
 
@@ -109,6 +110,8 @@ class ReviewManager:
             self.by_url.pop(key, None)
             existing = None
         if existing:
+            debug.log("review.reuse", token=existing.token[:6], url=debug.safe_url(existing.url),
+                      status=existing.status)
             return existing
         if len(self.records) >= self.max_records:
             return None
@@ -133,6 +136,8 @@ class ReviewManager:
         return row
 
     async def _run(self, row):
+        started = time.monotonic()
+        debug.log("review.start", token=row.token[:6], url=debug.safe_url(row.url))
         try:
             async with asyncio.timeout(self.timeout):
                 async with self.worker:
@@ -167,11 +172,22 @@ class ReviewManager:
                 self.resource_grants[origin] = row.created + self.ttl
             elif row.status == "block":
                 print("suspicious website", flush=True)
+            debug.log("review.done", token=row.token[:6], status=row.status, page_p=row.page_probability,
+                      seconds=round(time.monotonic() - started, 1), reason=row.reason)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as error:
+            from .remote import RemoteError
             # Never expose SDK exceptions, which may contain tokens or URLs.
+            # TrustLine's own error types carry fixed messages, safe to log. Others
+            # (SDK and network errors) can contain URLs or tokens: type only.
+            own = type(error).__name__ in {"RemoteError", "PlanError", "TimeoutError"}
+            debug.log("review.error", token=row.token[:6], error=type(error).__name__,
+                      message=str(error)[:200] if own and str(error) else None,
+                      seconds=round(time.monotonic() - started, 1))
             row.status, row.reason = "inconclusive", "The remote check could not finish. The website remains blocked."
+            if isinstance(error, RemoteError):
+                row.reason = str(error)[:500].rstrip(".") + ". The website remains blocked."
 
     def get(self, token):
         self.prune()

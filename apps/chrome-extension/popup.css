@@ -31,6 +31,7 @@ body[data-status="suspicious"] { --accent: var(--suspicious); }
 body[data-status="dangerous"] { --accent: var(--dangerous); }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 html, body { margin: 0; }
 

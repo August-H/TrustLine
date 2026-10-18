@@ -9,6 +9,7 @@ import socket
 from urllib.parse import urlsplit
 from urllib.error import HTTPError
 
+from . import debug
 from .inspection import MONEY_SITE, is_local_host, normalize_origin
 from .reviews import review_url
 from .transport import request_json
@@ -18,12 +19,44 @@ class RemoteError(Exception):
     pass
 
 
+CHALLENGE_WAIT_SECONDS = 10
+
+
 def public_url(value):
     target, sensitive_parts = review_url(value)
     parts = urlsplit(target)
     if sensitive_parts or parts.port not in {None, 80, 443}:
         raise RemoteError("Navigation requires an ordinary public URL without private parameters")
     return target
+
+
+def browser_error_code(error):
+    """Chrome's network error code (such as ERR_NAME_NOT_RESOLVED) from a browser error.
+
+    Only the fixed code is kept; the rest of the message can contain URLs.
+    """
+    match = re.search(r"\b(?:net::)?(ERR_[A-Z0-9_]{3,60})\b", str(error))
+    return match[1] if match else None
+
+
+def browser_failure_message(stage, code):
+    """Fixed explanations only, never the browser's URL-bearing exception text."""
+    if stage in {"loading the site", "browser action: navigate"}:
+        if code == "ERR_CONNECTION_RESET":
+            return "The cloud browser's connection to the website was reset."
+        if code == "ERR_NAME_NOT_RESOLVED":
+            return "The cloud browser could not resolve the website's address."
+        if code == "ERR_CONNECTION_REFUSED":
+            return "The website refused the cloud browser's connection."
+        if code and code.startswith("ERR_CERT_"):
+            return "The cloud browser could not verify the website's security certificate."
+        return "The cloud browser could not load the website."
+    return {
+        "connecting to the Cloudflare browser": "TrustLine could not connect to the cloud browser.",
+        "configuring the Cloudflare browser": "TrustLine could not prepare the cloud browser for inspection.",
+        "reading the page": "The cloud browser could not read the website.",
+        "waiting for the website's browser check": "The website's browser check could not finish. Safety is undetermined.",
+    }.get(stage, "The cloud browser could not complete the inspection.")
 
 
 class CloudflareBrowser:
@@ -36,9 +69,18 @@ class CloudflareBrowser:
         self.playwright = self.browser = self.context = self.page = None
         self.initial_origin = None
         self.initial_url = None
+        self.http_status = None
+        self.mitigation = None
+        # Blocks that stopped the inspected page itself from loading. Any of these
+        # means the page was not seen as a visitor would see it.
         self.blocked = []
+        # Everything else the policy refused: analytics beacons, websockets, media,
+        # popups, cross-origin frames. Normal on real sites; reported, not disqualifying.
+        self.background_blocks = 0
         self.requests = 0
         self.resolved = {}
+        # Which step the browser is on, so a failure can say where it happened.
+        self.stage = "not started"
 
     async def check_public_host(self, host):
         if is_local_host(host):
@@ -58,8 +100,10 @@ class CloudflareBrowser:
         target = public_url(target)
         self.initial_url = target
         self.initial_origin, host = normalize_origin(target)
+        self.stage = "checking the address resolves publicly"
         if not await self.check_public_host(host):
             raise RemoteError("The destination does not resolve to public addresses")
+        self.stage = "starting a Cloudflare browser session"
         result = await self.acquire_session(host)
         session_id = result.get("sessionId", "")
         if not re.fullmatch(r"[a-fA-F0-9-]{20,64}", session_id):
@@ -67,10 +111,12 @@ class CloudflareBrowser:
         self.session_id = session_id
         # Construct the fixed trusted endpoint, never use arbitrary response URLs.
         endpoint = (self.base + "/" + session_id).replace("https://", "wss://", 1)
+        self.stage = "connecting to the Cloudflare browser"
         self.playwright = await async_playwright().start()
         self.browser = await self.playwright.chromium.connect_over_cdp(
             endpoint, headers={"Authorization": "Bearer " + self.token}, timeout=15000)
         # No local launch(), user profile, or user cookies. This context is remote.
+        self.stage = "configuring the Cloudflare browser"
         self.context = await self.browser.new_context(viewport={"width": 1280, "height": 800},
             accept_downloads=False, service_workers="block", permissions=[])
         self.context.set_default_timeout(6000)
@@ -79,12 +125,106 @@ class CloudflareBrowser:
         await self.context.route_web_socket("**/*", lambda ws: ws.close())
         self.page = await self.context.new_page()
         self.page.on("dialog", lambda dialog: dialog.dismiss())
+        self.page.on("response", self.document_response)
         # Register after creating the inspection tab so it is not a popup.
         self.context.on("page", self.close_popup)
-        response = await self.page.goto(target, wait_until="domcontentloaded")
-        self.http_status = response.status if response else None
-        if response and response.headers.get("cf-mitigated") == "guardrails":
+        self.stage = "loading the site"
+        await self.navigate(target)
+        self.stage = "loaded"
+        # A site that upgrades http:// to https:// on the same host is the same site:
+        # inspect it from its HTTPS origin from here on.
+        final_url = getattr(self.page, "url", None)
+        if isinstance(final_url, str) and self.https_upgrade():
+            try:
+                if normalize_origin(final_url)[0] == self.https_upgrade():
+                    self.initial_origin = self.https_upgrade()
+            except ValueError:
+                pass
+
+    def remember_document_response(self, response):
+        self.http_status = response.status
+        self.mitigation = response.headers.get("cf-mitigated")
+        if self.mitigation == "guardrails" and "Cloudflare blocked a required navigation" not in self.blocked:
             self.blocked.append("Cloudflare blocked a required navigation")
+
+    def document_response(self, response):
+        # Challenge scripts may reload the main document after goto() returns.
+        # Subresources and iframe responses must not overwrite its status.
+        request = response.request
+        if request.is_navigation_request() and request.frame == self.page.main_frame:
+            self.remember_document_response(response)
+
+    async def navigate(self, target):
+        from playwright.async_api import Error
+        # Reuse the guarded context, so a retry needs no new Cloudflare session.
+        # DNS, certificate, policy and timeout failures are not retried.
+        transient = {"ERR_CONNECTION_RESET", "ERR_CONNECTION_CLOSED",
+                     "ERR_NETWORK_CHANGED", "ERR_HTTP2_PROTOCOL_ERROR"}
+        for attempt in range(2):
+            try:
+                self.http_status = self.mitigation = None
+                response = await self.page.goto(target, wait_until="domcontentloaded")
+                # Response events normally set this first. Retain the latest
+                # document if an automatic navigation has already followed it.
+                if response and self.http_status is None:
+                    self.remember_document_response(response)
+                return response
+            except Error as error:
+                code = browser_error_code(error)
+                if attempt or code not in transient or self.blocked:
+                    raise
+                debug.log("cloud.retry", stage=self.stage, code=code, attempt=2)
+                await asyncio.sleep(0.5)
+
+    async def challenge_present(self):
+        if self.mitigation == "challenge":
+            return True
+        # Whole-page interstitial markers, not ordinary embedded Turnstile forms.
+        # Return only a boolean; page text and challenge tokens are never logged.
+        return await self.page.evaluate("""({status}) => {
+            const title = (document.title || '').trim();
+            const text = (document.body?.innerText || '').trim().slice(0, 4000);
+            const shortPage = text.length < 2000;
+            const marker = Boolean(document.querySelector(
+                '#challenge-form, #challenge-running, #challenge-stage, #cf-challenge-running'));
+            const challengeTitle = /^(just a moment|checking your browser|verify (you are|you're) human|security verification)([.!…\\s]|$)/i.test(title);
+            const challengeText = /checking your browser|performing security verification|verifying (you are|you're) human|verify (you are|you're) human/i.test(text);
+            return shortPage && (marker || challengeTitle ||
+                ([403, 429, 503].includes(status) && challengeText));
+        }""", {"status": self.http_status}) is True
+
+    async def wait_for_site(self):
+        from playwright.async_api import Error
+        waiting = False
+        try:
+            async with asyncio.timeout(CHALLENGE_WAIT_SECONDS):
+                while True:
+                    try:
+                        challenged = await self.challenge_present()
+                    except Error as error:
+                        # Automatic challenge reloads can replace the JS context
+                        # during this fixed read. Wait for the new document.
+                        if not any(message in str(error) for message in (
+                                "Execution context was destroyed", "Cannot find context with specified id")):
+                            raise
+                        challenged = True
+                    if not challenged:
+                        if waiting:
+                            debug.log("cloud.challenge", status="cleared", http_status=self.http_status)
+                        return
+                    if not waiting:
+                        waiting = True
+                        self.stage = "waiting for the website's browser check"
+                        debug.log("cloud.challenge", status="waiting", http_status=self.http_status,
+                                  timeout_seconds=CHALLENGE_WAIT_SECONDS)
+                    if self.blocked:
+                        raise RemoteError("The website's browser check could not complete under the inspection policy. Safety is undetermined.")
+                    await asyncio.sleep(0.5)
+        except TimeoutError:
+            if not waiting:
+                raise RemoteError("The cloud browser could not read the website.") from None
+            debug.log("cloud.challenge", status="timeout", http_status=self.http_status)
+            raise RemoteError("The website's browser check did not clear within 10 seconds. Safety is undetermined.") from None
 
     async def acquire_session(self, host):
         # The free plan allows one new instance per 20 seconds. Retry once,
@@ -107,7 +247,7 @@ class CloudflareBrowser:
 
     async def close_popup(self, page):
         if page is not self.page:
-            self.blocked.append("A popup was blocked")
+            self.background_blocks += 1
             await page.close()
 
     async def route(self, route):
@@ -122,19 +262,44 @@ class CloudflareBrowser:
                     or request.resource_type in {"media", "websocket", "eventsource"}
                     or not await self.check_public_host(host)):
                 raise RemoteError("Request denied")
-            if request.is_navigation_request() and origin != self.initial_origin:
+            if request.is_navigation_request() and not self.same_site(origin):
                 raise RemoteError("Cross-origin navigation denied")
             await route.continue_()
         except Exception:
-            if len(self.blocked) < 12:
-                self.blocked.append("A network request was blocked by the inspection policy")
+            if not self.is_main_document(request):
+                self.background_blocks += 1
+            elif len(self.blocked) < 12:
+                self.blocked.append("The page itself was blocked by the inspection policy")
             await route.abort()
 
+    def https_upgrade(self):
+        """The https:// origin for an http:// starting origin on a default port, else None."""
+        origin = self.initial_origin or ""
+        rest = origin[len("http://"):]
+        if origin.startswith("http://") and rest and ":" not in rest:
+            return "https://" + rest
+        return None
+
+    def same_site(self, origin):
+        return origin == self.initial_origin or (origin is not None and origin == self.https_upgrade())
+
+    def is_main_document(self, request):
+        """The inspected tab's own page load, not its scripts, beacons, frames or popups."""
+        try:
+            if not request.is_navigation_request():
+                return False
+            return self.page is None or request.frame == self.page.main_frame
+        except Exception:
+            return True  # When unsure, count it against approval.
+
     async def observe(self):
+        self.stage = "reading the page"
         if self.page.is_closed():
             raise RemoteError("The inspection page closed")
+        await self.wait_for_site()
+        self.stage = "reading the page"
         current, _ = normalize_origin(self.page.url)
-        if current != self.initial_origin:
+        if not self.same_site(current):
             raise RemoteError("The browser left the inspected origin")
         screenshot = await self.page.screenshot(type="jpeg", quality=55, full_page=False,
                                                timeout=6000)
@@ -155,27 +320,30 @@ class CloudflareBrowser:
             // Many sign-in and checkout pages render fields outside a <form>.
             fields: Array.from(document.querySelectorAll('input')).slice(0,60)
                 .map(e => ({type:e.type, name:e.name?.slice(0,80), autocomplete:(e.autocomplete || '').slice(0,40)})),
-            html: document.documentElement.outerHTML.slice(0,2000000)
+            // Jev reads the page body; the <head> is mostly preload and script tags.
+            html: (document.body || document.documentElement).outerHTML.slice(0,2000000)
         })""")
         return {**state, "url": self.page.url.split("?", 1)[0].split("#", 1)[0],
                 "initial_origin": self.initial_origin, "initial_url": self.initial_url, "http_status": self.http_status,
-                "policy_blocks": self.blocked[:],
+                "policy_blocks": self.blocked[:], "background_requests_blocked": self.background_blocks,
                 "screenshot": "data:image/jpeg;base64," + base64.b64encode(screenshot).decode()}
 
     async def act(self, action):
         operation = action.get("action")
+        self.stage = f"browser action: {operation}"
         if operation == "scroll":
             delta = action.get("y")
-            if type(delta) is not int or not -1600 <= delta <= 1600:
-                raise RemoteError("Invalid scroll")
+            # A scroll amount is harmless: clamp an oversized one instead of failing the review.
+            if type(delta) not in (int, float) or delta != delta:
+                delta = 800
+            delta = max(-1600, min(1600, round(delta)))
             await self.page.mouse.wheel(0, delta)
             await asyncio.sleep(0.2)
         elif operation == "navigate":
             target = public_url(action.get("url"))
-            if normalize_origin(target)[0] != self.initial_origin:
+            if not self.same_site(normalize_origin(target)[0]):
                 raise RemoteError("Navigation must remain on the inspected origin")
-            response = await self.page.goto(target, wait_until="domcontentloaded")
-            self.http_status = response.status if response else None
+            await self.navigate(target)
         elif operation == "click_link":
             x, y = action.get("x"), action.get("y")
             if type(x) is not int or type(y) is not int or not (0 <= x < 1280 and 0 <= y < 800):
@@ -264,14 +432,18 @@ def _shorten_script(match):
 
 
 def compact_html(html):
-    """The rendered page's HTML, made small enough for Jev.
+    """The rendered page's <body> HTML, made small enough for Jev.
 
-    Drops comments, CSS, SVG drawings and embedded base64 files, keeps the first
+    Starts at <body> (anything before it, such as <head>, is dropped). Drops
+    comments, CSS, SVG drawings and embedded base64 files, keeps the first
     2,000 characters of each inline script, collapses whitespace, then caps it.
     Hidden elements, form targets, link targets and script sources all remain.
     """
     if not isinstance(html, str):
         return ""
+    body = re.search(r"<body\b", html, re.I)
+    if body:
+        html = html[body.start():]
     html = re.sub(r"<!--.*?-->", "", html, flags=re.S)
     html = re.sub(r"(<style\b[^>]*>).*?(</style>)", r"\1\2", html, flags=re.S | re.I)
     html = re.sub(r"(<svg\b[^>]*>).*?(</svg>)", r"\1\2", html, flags=re.S | re.I)
@@ -314,11 +486,18 @@ class RemoteReviewer:
         try:
             try:
                 result = await self.explore(browser, url, checks, observations)
-            except Exception:
+            except Exception as error:
+                from playwright.async_api import Error
+                stage = getattr(browser, "stage", None)
+                code = browser_error_code(error)
+                debug.log("cloud.error", stage=stage if isinstance(stage, str) else None,
+                          error=type(error).__name__, code=code)
                 page = await checks[0] if checks else None
                 # A scam Jev found on the page still blocks it if the cloud model fails.
                 if self.page_flagged(page):
                     return {**self.page_block(page), "page_features": page_features(observations)}
+                if isinstance(error, Error):
+                    raise RemoteError(browser_failure_message(stage, code)) from None
                 raise
             page = await checks[0] if checks else None
             # Jev finding a scam blocks the page even when the model would allow it.
@@ -339,10 +518,18 @@ class RemoteReviewer:
         for step in range(self.max_steps):
             observation = await browser.observe()
             observations.append(observation)
+            debug.log("cloud.page", step=step + 1, url=debug.safe_url(observation.get("url", "")),
+                      http_status=observation.get("http_status"), text_chars=len(observation.get("text") or ""),
+                      html_chars=len(observation.get("html") or ""), blocked=len(observation.get("policy_blocks") or []),
+                      background_blocked=observation.get("background_requests_blocked", 0))
             if not checks and self.jev is not None:
                 # Jev reads the landing page while the model decides its first action.
                 checks.append(asyncio.create_task(self.check_page(observation)))
             action = await asyncio.to_thread(self.model.action, observation, history)
+            debug.log("cloud.action", step=step + 1, action=action.get("action"), verdict=action.get("verdict"),
+                      y=action.get("y"),
+                      url=debug.safe_url(action.get("url")) if action.get("url") else None,
+                      reason=str(action.get("reason", ""))[:200])
             if action.get("action") == "finish":
                 return self.finish(action, observation)
             history.append({"page_url": observation.get("url"), "title": observation.get("title"),
@@ -368,15 +555,23 @@ class RemoteReviewer:
         """Return Jev's deceptive-page and money-site probabilities, or None if unavailable."""
         page = page_state(observation)
         try:
-            return await asyncio.to_thread(self.jev.assess_page, page)
-        except Exception:
+            result = await asyncio.to_thread(self.jev.assess_page, page)
+            debug.log("jev.page", deceptive=result[0], money=result[1], html_chars=len(page.get("html", "")),
+                      text_chars=len(page.get("text") or ""))
+            return result
+        except Exception as error:
+            debug.log("jev.page.error", error=type(error).__name__, html_chars=len(page.get("html", "")),
+                      retry_without_html="html" in page)
             if "html" not in page:
                 # The cloud model's verdict stands alone when the page check is unavailable.
                 return None
         try:
             # The HTML may have pushed it past Jev's context limit: the visible page still counts.
-            return await asyncio.to_thread(self.jev.assess_page, page_state(observation, include_html=False))
-        except Exception:
+            result = await asyncio.to_thread(self.jev.assess_page, page_state(observation, include_html=False))
+            debug.log("jev.page", deceptive=result[0], money=result[1], html_chars=0, retried=True)
+            return result
+        except Exception as error:
+            debug.log("jev.page.error", error=type(error).__name__, retried=True)
             return None
 
     def page_flagged(self, page):

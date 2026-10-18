@@ -113,8 +113,10 @@ function trustLineNudge() {
     try {
       const res = await chrome.runtime.sendMessage({ type: "nudgeDeepScan" });
       if (!res?.ok) throw new Error(res?.error || "No response from TrustLine");
-      const { verdict, reason } = res.data;
-      if (verdict === "safe") {
+      const { verdict, assessment, reason } = res.data;
+      if (assessment === "undetermined") {
+        show("offer", "Safety undetermined", reason || "The deep scan could not finish.");
+      } else if (verdict === "safe") {
         show("safe", "Deep scan found no scam", reason || "TrustLine checked this page in a cloud browser.", 8000);
       } else if (verdict === "dangerous") {
         show("blocked", "This page was blocked", reason || "TrustLine found signs of a scam.");

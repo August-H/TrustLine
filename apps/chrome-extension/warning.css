@@ -38,6 +38,14 @@ body[data-status="safe"] {
   --signal-tint: var(--go-tint);
 }
 
+body[data-status="undetermined"] {
+  --signal: var(--muted);
+  --signal-tint: var(--rule);
+}
+
+[hidden] { display: none !important; }
+body[data-status="undetermined"] .band-icon[data-theme="undetermined"] { display: block; }
+
 * { box-sizing: border-box; }
 
 html, body { margin: 0; }

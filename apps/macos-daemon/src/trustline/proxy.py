@@ -167,7 +167,8 @@ class InspectionProxy:
         self.executor.shutdown(wait=False, cancel_futures=True)
 
 
-async def run_proxy(state_dir: Path, inspector: Inspector, port: int = 8899, extra_addons=(), reviewer=None, api_port=None):
+async def run_proxy(state_dir: Path, inspector: Inspector, port: int = 8899, extra_addons=(), reviewer=None, api_port=None,
+                    debug_state=False):
     os.umask(0o077)
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     state_dir.chmod(0o700)
@@ -200,7 +201,7 @@ async def run_proxy(state_dir: Path, inspector: Inspector, port: int = 8899, ext
         try:
             if api_port is not None:
                 from .api import start_api
-                api_server = start_api(addon, api_port)
+                api_server = start_api(addon, api_port, debug_state=debug_state)
                 print(f"TrustLine extension API starting on 127.0.0.1:{api_port}", file=sys.stderr, flush=True)
             print(f"TrustLine proxy starting on 127.0.0.1:{port}", file=sys.stderr, flush=True)
             await master.run()

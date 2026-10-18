@@ -43,6 +43,8 @@ const el = {
   statusIcon: $("statusIcon"),
   verdict: $("verdict"),
   scoreValue: $("scoreValue"),
+  meterTitle: $("meterTitle"),
+  numericScore: $("numericScore"),
   track: $("meterTrack"),
   fill: $("meterFill"),
   signals: $("signals"),
@@ -95,15 +97,17 @@ function currentView() {
   if (isDemo) {
     return { kind: "result", result: { ...DEMO_RESULTS[state.demo], domain, source: "demo" }, scanning: state.demoScanning };
   }
-  if (!state.tab.scannable) return { kind: "unscannable" };
   const scanning = state.scanning;
   if (state.result) return { kind: "result", result: state.result, scanning: scanning?.mode === "deep" };
+  if (!state.tab.scannable) return { kind: "unscannable" };
   return { kind: "pending", scanning: scanning?.mode === "deep" };
 }
 
 function render() {
   const view = currentView();
-  const status = view.kind === "result" ? view.result.verdict : "idle";
+  const undetermined = view.kind === "result" &&
+    (view.result.assessment === "undetermined" || view.result.review?.status === "inconclusive");
+  const status = undetermined ? "undetermined" : view.kind === "result" ? view.result.verdict : "idle";
   el.body.dataset.status = status;
 
   // Daemon pill
@@ -122,7 +126,10 @@ function render() {
 
   // Status card
   el.statusIcon.classList.toggle("is-pending", view.kind === "pending");
-  if (view.kind === "result") {
+  if (undetermined) {
+    el.statusIcon.innerHTML = ICONS.idle;
+    setVerdictText("Safety of ", view.result.domain, " is undetermined");
+  } else if (view.kind === "result") {
     const { result } = view;
     const [pre, post] = VERDICT_COPY[result.verdict];
     el.statusIcon.innerHTML = ICONS[result.verdict];
@@ -136,13 +143,18 @@ function render() {
   }
 
   // Trust meter
-  const score = view.kind === "result" ? view.result.score : null;
+  const score = !undetermined && view.kind === "result" ? view.result.score : null;
+  el.meterTitle.textContent = undetermined ? "Scan result: Undetermined" : "Trust meter";
+  el.numericScore.hidden = score === null;
+  el.track.hidden = score === null;
   el.scoreValue.textContent = score === null ? "--" : String(score);
   el.fill.style.width = `${score ?? 0}%`;
-  el.track.setAttribute("aria-valuenow", String(score ?? 0));
+  if (score === null) el.track.removeAttribute("aria-valuenow");
+  else el.track.setAttribute("aria-valuenow", String(score));
 
   // Never show scoring formulas (e.g. "100 × (1 − …)") as if they were reasons.
-  const reasons = (view.kind === "result" ? view.result.reasons ?? [] : [])
+  const reasons = (undetermined ? [view.result.review?.reason || "The deep scan could not finish."]
+    : view.kind === "result" ? view.result.reasons ?? [] : [])
     .filter((r) => !/×|\(1\s*[−-]/.test(r));
   el.signals.hidden = reasons.length === 0;
   el.signals.replaceChildren(
@@ -152,7 +164,7 @@ function render() {
   // Deep scan button
   const scanning = Boolean(view.scanning);
   el.scanBtn.classList.toggle("is-scanning", scanning);
-  el.scanBtn.disabled = scanning || view.kind === "unscannable";
+  el.scanBtn.disabled = scanning || !state.tab.scannable;
   el.scanBtn.setAttribute("aria-busy", String(scanning));
   el.scanLabel.textContent = scanning ? "Scanning…" : "Deep scan";
   setScanTicker(scanning);
@@ -211,6 +223,8 @@ async function deepScan() {
     await refresh();
   } catch (err) {
     state.error = `Deep scan failed: ${err.message}`;
+    state.result = { ...state.result, domain: state.tab.domain, assessment: "undetermined", score: null,
+      review: { status: "inconclusive", reason: state.error } };
   }
   state.scanning = null;
   render();

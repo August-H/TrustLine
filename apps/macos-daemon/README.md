@@ -159,7 +159,10 @@ whether the site is about crypto, finance, or shopping, and (for hostnames, not 
 addresses) whether it is the official domain of a widely recognized organization.
 The extension API sends a money site Jev does not recognize (under
 `RECOGNIZED_THRESHOLD` in `api.py`) to the cloud check before it opens, whatever its
-address score, and reports the answer as `recognized_probability`. For the misspelling check,
+address score, and reports the answer as `recognized_probability`. Such a site opens
+only on a finished `allow`; if the check fails or is inconclusive, the response is
+`"verdict": "suspicious"` with `"cloud_required": true`, so the extension holds it on
+the warning page. For the misspelling check,
 code supplies candidate readings of the hostname with common substitutions undone
 (`visu4lstudio` reads as `visualstudio`). The higher of the first two
 probabilities is the result. It is not a separate severity score. These are Noul
@@ -173,8 +176,8 @@ For remote review, Cloudflare receives the destination origin and path. OpenAI
 receives the remote browser's rendered text, page/link/form metadata, screenshots,
 and action history. Jev receives the landing page's origin, title, rendered text,
 form fields (input types and names, and where each form submits), and the rendered
-page's HTML, but no URL path, query, or screenshot. The HTML is compacted to fit
-Jev's context (`compact_html` in `remote.py`): comments, CSS, SVG drawings and
+page's `<body>` HTML, but no URL path, query, screenshot, or `<head>`. The HTML is
+compacted to fit Jev's context (`compact_html` in `remote.py`): comments, CSS, SVG drawings and
 embedded base64 files are removed, each inline script keeps its first 2,000
 characters, and the result is capped at 48,000 characters. It still contains hidden
 elements, link and form targets, and script sources, which is what lets Jev spot
@@ -209,7 +212,26 @@ lasts at most 120 seconds from job creation. A successful page approval lasts
 24 hours and applies to that exact page URL plus its first-party assets.
 Another page or iframe needs its own review. Third-party
 assets remain independently checked and may be blocked, so some sites will not
-function fully. An incomplete remote render cannot receive an automatic pass.
+function fully. A redirect from `http://` to `https://` on the same host counts as
+the same site. An incomplete remote render cannot receive an automatic pass: a
+non-2xx response, an empty page, or a block on the inspected page's own load (such
+as a redirect to another site) turns an `allow` into `inconclusive`. Blocked
+background requests (analytics beacons, websockets, media, popups, cross-origin
+frames) are counted as `background_requests_blocked` but do not void an approval.
+Transient connection resets, closed connections, network changes and HTTP/2
+protocol errors retry once in the same guarded cloud session. DNS, certificate,
+policy and navigation timeout failures do not retry. A failed browser inspection
+stays inconclusive and keeps the page blocked, with a fixed explanation instead
+of the browser's exception text, which may contain private URLs.
+Inconclusive reviews return `assessment: "undetermined"` with a null score and
+no address probability in their displayed reasons. The address verdict remains
+available to navigation policy; the extension shows an undetermined assessment.
+Before either page model runs, the browser detects challenge responses and common
+browser-check interstitials and waits up to 10 seconds for them to clear
+automatically. Main-document responses update the HTTP status after automatic
+reloads. A persistent challenge stays undetermined without sending the challenge
+page to either model or assigning it a page probability. The wait does not click
+verification controls or relax request restrictions.
 Scam pages can also show different content to cloud browsers, so the verdict is
 an assessment of what was observed, not a safety certificate.
 
@@ -316,6 +338,45 @@ curl -s http://127.0.0.1:8765/health
 
 It should print `"status": "ok"` and, when Cloudflare and ChatGPT are set up,
 `"cloud_review_configured": true`.
+
+## Debug mode
+
+Debug mode writes an event log and opens a Terminal window that shows it beside
+live daemon state. It is off by default. Turn it on with either:
+
+```sh
+.venv/bin/python run.py serve --debug
+```
+
+or `TRUSTLINE_DEBUG=1` in `.env` (works under the LaunchAgent), then restart the
+daemon. A Terminal window opens on start. Close it any time and reopen it with:
+
+```sh
+.venv/bin/python run.py debug          # new Terminal window
+.venv/bin/python run.py debug-console  # in the current terminal
+```
+
+The top of the window refreshes every second with the settings in force (Jev
+thresholds, confidence and recognition cut-offs, whether cloud review is set up,
+reasoning effort), Jev's key and cooldown, the last 10 cached address results
+(probability, confidence, money site, recognized), and the cloud review queue.
+Below it, the newest lines of `~/Library/Logs/TrustLine/debug.log`:
+
+| Event | What it shows |
+| --- | --- |
+| `analyze` | Each extension request: mode, URL, Jev status, probability, confidence, score, money site, recognized, whether it went to the cloud, verdict, unsure, review status |
+| `jev`, `jev.error`, `jev.cached` | Questions asked, answers, input tokens, request size and time |
+| `review.start`, `review.reuse`, `review.done`, `review.error` | Cloud review lifecycle, verdict, page probability, duration; errors raised by TrustLine's own checks include their fixed message, others only their type |
+| `cloud.page`, `cloud.action` | Each cloud browser step: HTTP status, text and HTML size, the model's action and reason |
+| `cloud.error` | Where a cloud review failed (`stage`, such as "loading the site"), the error type, and Chrome's network error `code` (such as `ERR_NAME_NOT_RESOLVED`) when there is one |
+| `jev.page`, `jev.page.error` | The page check's result, and whether it retried without HTML |
+| `chatgpt`, `chatgpt.error` | Each GPT call's action or verdict, reasoning effort and time; errors as type and HTTP status only |
+
+The log records URLs without credentials, query or fragment, and never records
+API keys, tokens, cookies, page text or HTML (only sizes). It is readable only by
+you. It does record which sites you visit, so turn debug mode off when you're
+done. The `/v1/debug/state` endpoint exists only in debug mode and follows the
+same loopback and Chrome-extension origin rules as the rest of the API.
 
 ## Verify
 

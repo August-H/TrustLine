@@ -9,6 +9,7 @@ import sys
 
 from dotenv import dotenv_values
 
+from . import debug
 from .inspection import ApprovedSites, Inspector, JevClient
 
 ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -56,6 +57,13 @@ def main():
                         help="Stricter threshold for crypto, finance, and shopping sites")
     daemon.add_argument("--port", type=int, default=8899)
     daemon.add_argument("--api-port", type=int, default=8765, help="Loopback Chrome extension API port")
+    daemon.add_argument("--debug", action="store_true",
+                        help="Write a debug log and open a Terminal window showing it with live state "
+                             "(also TRUSTLINE_DEBUG=1 in .env)")
+    for name, text in (("debug", "Open the debug console in a new Terminal window"),
+                       ("debug-console", "Show the debug log and live state in this terminal")):
+        command = commands.add_parser(name, help=text)
+        command.add_argument("--api-port", type=int, default=8765)
     browser = commands.add_parser("launch-chrome", help="Open a Chrome session using the proxy")
     browser.add_argument("--port", type=int, default=8899)
     inspect = commands.add_parser("inspect", help="Assess a URL directly without opening it")
@@ -78,6 +86,14 @@ def main():
     args.state_dir = args.state_dir.expanduser().resolve()
     os.umask(0o077)
     try:
+        if args.command == "debug-console":
+            debug.run_console(args.api_port)
+            return
+        if args.command == "debug":
+            args.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if not debug.open_console(args.state_dir, args.api_port):
+                raise ValueError("Opening Terminal needs macOS. Run debug-console in a terminal instead.")
+            return
         if args.command.startswith("chatgpt-") or args.command == "check-config":
             from .chatgpt import ChatGPTAccount, PlanError
             account = ChatGPTAccount(args.state_dir)
@@ -150,7 +166,16 @@ def main():
                     reviewer = RemoteReviewer(ChatGPTPlanClient(account), lambda: CloudflareBrowser(account_id, token),
                                               jev=inspector.jev, threshold=inspector.threshold,
                                               money_threshold=inspector.money_threshold)
-                asyncio.run(run_proxy(args.state_dir, inspector, args.port, reviewer=reviewer, api_port=args.api_port))
+                debug_mode = args.debug or str(setting("TRUSTLINE_DEBUG", "")).lower() in {"1", "true", "yes", "on"}
+                if debug_mode:
+                    debug.enable()
+                    debug.log("startup", proxy_port=args.port, api_port=args.api_port, jev_model=args.model,
+                              threshold=args.threshold, money_threshold=args.money_threshold,
+                              typesafe_key=bool(inspector.jev.api_key), cloud_review=reviewer is not None)
+                    args.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    debug.open_console(args.state_dir, args.api_port)
+                asyncio.run(run_proxy(args.state_dir, inspector, args.port, reviewer=reviewer, api_port=args.api_port,
+                                      debug_state=debug_mode))
             else:
                 print(json.dumps(inspector.inspect({"url": args.url})))
         elif args.command == "approved":

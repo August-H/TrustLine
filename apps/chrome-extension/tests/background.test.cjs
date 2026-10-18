@@ -95,13 +95,18 @@ test("an inconclusive cloud review never becomes a safe verdict", async () => {
   const result = await w.analyze("deep");
   assert.equal(result.verdict, "suspicious");
   assert.equal(result.review.reason, "Cloud credentials missing");
+  assert.equal(result.score, null);
+  assert.equal(result.assessment, "undetermined");
 });
 
 test("daemon failures do not generate heuristic scores or simulated deep results", async () => {
   const quick = worker([new Error("Offline")]);
   assert.equal((await quick.analyze("quick")).score, null);
   const deep = worker([new Error("Offline")]);
-  await assert.rejects(deep.analyze("deep"), /Cloud review unavailable/);
+  const result = await deep.analyze("deep");
+  assert.equal(result.score, null);
+  assert.equal(result.assessment, "undetermined");
+  assert.equal(result.review.status, "inconclusive");
   assert.equal(deep.calls.length, 1);
 });
 
@@ -212,9 +217,9 @@ test("an inconclusive cloud check on the loading screen falls back to the addres
   assert.equal(outcome.action, "proceed");
   const result = w.storage["result:1"];
   assert.equal(result.verdict, "safe");
-  assert.equal(result.score, 90);
-  assert.equal(result.reasons[0], "Address looks ordinary");
-  assert.match(result.reasons[1], /based on the web address only/);
+  assert.equal(result.score, null);
+  assert.equal(result.assessment, "undetermined");
+  assert.deepEqual([...result.reasons], ["The page could not be inspected completely."]);
 });
 
 test("a lost cloud job on the loading screen keeps the address verdict instead of failing", async () => {
@@ -225,7 +230,7 @@ test("a lost cloud job on the loading screen keeps the address verdict instead o
   ]);
   const outcome = await navigate(w);
   assert.equal(outcome.action, "warn");
-  assert.equal(new URL(outcome.url).searchParams.get("score"), "8");
+  assert.equal(new URL(outcome.url).searchParams.has("score"), false);
   assert.equal(w.storage["result:1"].source, "daemon");
 });
 
@@ -310,4 +315,81 @@ test("an unrecognized money site waits for the cloud and shows no prompt once it
   await w.listeners.updated(1, { status: "complete" }, { url: "https://ordinary.example/" });
   await new Promise((r) => setImmediate(r));
   assert.equal(w.injected.length, 0);
+});
+
+test("an unrecognized financial site the cloud couldn't decide on is held on the warning page", async () => {
+  const w = worker([
+    { ...UNSURE, score: 93, cloud_required: true, review: { token: "money-job", status: "pending" } },
+    { status: "inconclusive", reason: "The page could not be inspected completely.", evidence: [] },
+  ]);
+  const outcome = await navigate(w);
+  assert.equal(outcome.action, "warn");
+  assert.equal(new URL(outcome.url).searchParams.get("verdict"), "suspicious");
+  assert.equal(w.storage["result:1"].unsure, false);
+  assert.equal(w.storage["result:1"].assessment, "undetermined");
+  assert.equal(w.storage["result:1"].score, null);
+});
+
+test("a failed cloud check on an unrecognized financial site also holds it", async () => {
+  const w = worker([
+    { ...UNSURE, score: 93, cloud_required: true, review: { token: "gone", status: "pending" } },
+    new Error("This cloud review is unavailable or expired"),
+  ]);
+  const outcome = await navigate(w);
+  assert.equal(outcome.action, "warn");
+});
+
+test("holding an unchecked financial site keeps a dangerous address verdict", async () => {
+  const w = worker([
+    { verdict: "dangerous", score: 11, jev_status: "suspicious", score_source: "jev", cloud_required: true,
+      review: { token: "job", status: "pending" } },
+    { status: "inconclusive", reason: "The remote check could not finish.", evidence: [] },
+  ]);
+  const outcome = await navigate(w);
+  assert.equal(new URL(outcome.url).searchParams.get("verdict"), "dangerous");
+  assert.equal(new URL(outcome.url).searchParams.has("score"), false);
+});
+
+test("failed deep scans discard address percentages and scores in every scan mode", async () => {
+  for (const mode of ["quick", "deep", "navigate"]) {
+    for (const score of [9, 99]) {
+      const w = worker([{ verdict: score === 9 ? "dangerous" : "safe", score,
+        score_source: "jev", jev_probability: 1 - score / 100,
+        reasons: ["TrustLine estimates a 9.0% chance this web address is fake or misleading."],
+        review: { status: "inconclusive", reason: "The cloud browser could not load the website.",
+          evidence: [], page_probability: 0.05 } }]);
+      const result = await w.analyze(mode);
+      assert.equal(result.assessment, "undetermined");
+      assert.equal(result.score, null);
+      assert.equal(result.scoreSource, null);
+      assert.doesNotMatch(result.reasons.join(" "), /%|chance/);
+      w.context.testResult = result;
+      const warning = new URL(vm.runInContext("warningPageUrl('https://ordinary.example/', testResult)", w.context));
+      assert.equal(warning.searchParams.has("score"), false);
+      assert.equal(warning.searchParams.get("review"), "inconclusive");
+      assert.doesNotMatch(warning.searchParams.get("reasons"), /%|chance/);
+    }
+  }
+});
+
+test("a failed deep scan replaces a previously safe cached score", async () => {
+  const w = worker([new Error("Offline")]);
+  w.storage["result:1"] = { verdict: "safe", score: 99 };
+  await vm.runInContext("scanTab(1, 'https://ordinary.example/', 'deep')", w.context);
+  assert.equal(w.storage["result:1"].assessment, "undetermined");
+  assert.equal(w.storage["result:1"].score, null);
+});
+
+test("the popup retains the undetermined result on its warning page", async () => {
+  const w = worker([{ verdict: "dangerous", score: 9, jev_status: "suspicious", cloud_required: true,
+    review: { status: "inconclusive", reason: "The website could not be reached.", evidence: [] } }]);
+  const outcome = await navigate(w);
+  w.tab.url = outcome.url;
+  await w.listeners.updated(1, { url: outcome.url }, w.tab);
+  // checkDaemon reuses the health result set by the navigation scan.
+  const state = await vm.runInContext("handlers.getTabState({ tabId: 1 })", w.context);
+  assert.equal(state.result.assessment, "undetermined");
+  assert.equal(state.result.score, null);
+  assert.equal(state.tab.domain, "ordinary.example");
+  assert.equal(state.tab.scannable, false);
 });

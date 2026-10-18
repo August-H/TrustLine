@@ -53,6 +53,17 @@ function hostnameOf(url) {
   }
 }
 
+function resultTarget(url) {
+  try {
+    const current = new URL(url);
+    const warning = new URL(chrome.runtime.getURL("warning.html"));
+    if (current.protocol === warning.protocol && current.host === warning.host && current.pathname === warning.pathname) {
+      return current.searchParams.get("url");
+    }
+  } catch { /* invalid tab URL */ }
+  return url;
+}
+
 function verdictFromScore(score) {
   if (score >= 70) return "safe";
   if (score >= 40) return "suspicious";
@@ -68,6 +79,7 @@ function clampScore(n) {
 const BLOCKED_MAX_SCORE = 39;
 
 function reviewedScore(score, review) {
+  if (review?.status === "inconclusive") return null;
   const valid = typeof score === "number" && Number.isFinite(score);
   let next = valid ? score : null;
   const page = review?.page_probability;
@@ -125,8 +137,9 @@ async function checkDaemon(force = false) {
 }
 
 function normalizeResult(raw, url, mode, source) {
+  const undetermined = raw?.assessment === "undetermined" || raw?.review?.status === "inconclusive";
   const suppliedScore = raw?.score;
-  const score = typeof suppliedScore === "number" && Number.isFinite(suppliedScore)
+  const score = !undetermined && typeof suppliedScore === "number" && Number.isFinite(suppliedScore)
     ? clampScore(suppliedScore) : null;
 
   let verdict = String(raw?.verdict ?? raw?.status ?? "").toLowerCase();
@@ -137,7 +150,9 @@ function normalizeResult(raw, url, mode, source) {
     verdict = score === null ? "suspicious" : verdictFromScore(score);
   }
 
-  const reasons = Array.isArray(raw?.reasons)
+  const reasons = undetermined
+    ? [raw?.review?.reason || "The deep scan could not finish. This website's safety is undetermined."]
+    : Array.isArray(raw?.reasons)
     ? raw.reasons.filter((r) => typeof r === "string" && r.trim()).slice(0, 6)
     : [];
 
@@ -147,7 +162,8 @@ function normalizeResult(raw, url, mode, source) {
     targetUrl: raw?.target_url || url,
     schemaVersion: 2,
     verified: raw?.verified === true,
-    scoreSource: raw?.score_source ?? null,
+    assessment: undetermined ? "undetermined" : null,
+    scoreSource: undetermined ? null : raw?.score_source ?? null,
     jevProbability: raw?.jev_probability ?? null,
     jevStatus: raw?.jev_status ?? null,
     // |2p - 1| for Jev's yes/no answer: 0 = a coin flip, 1 = certain either way.
@@ -203,7 +219,15 @@ async function analyzeUrl(url, mode, { waitForReview = true } = {}) {
     healthCache = { checkedAt: Date.now(), online: true, version: "0.2.0" };
     if (!waitForReview && raw.review?.status === "pending") return null;
     await awaitReview(raw, mode);
-    if (raw.review?.status === "inconclusive" && mode === "navigate") {
+    if (raw.review?.status === "inconclusive" && mode === "navigate" && raw.cloud_required) {
+      // An unrecognized financial site opens only on a finished "allow": hold it,
+      // keeping "dangerous" if the address check already said so.
+      if (raw.verdict !== "dangerous") raw.verdict = "suspicious";
+      raw.unsure = false;
+      raw.reasons = [...new Set([...(raw.reasons ?? []),
+        "TrustLine couldn't finish checking this unrecognized financial site, so it's holding the page for you to decide.",
+        raw.review.reason].filter(Boolean))];
+    } else if (raw.review?.status === "inconclusive" && mode === "navigate") {
       // Before a page opens, a cloud check that couldn't decide leaves the
       // address check in charge instead of holding every such page.
       raw.reasons = [...(raw.reasons ?? []),
@@ -218,7 +242,9 @@ async function analyzeUrl(url, mode, { waitForReview = true } = {}) {
     return normalizeResult(raw, url, mode, "daemon");
   } catch (err) {
     healthCache = { checkedAt: Date.now(), online: false, version: null };
-    if (mode === "deep") throw new Error(`Cloud review unavailable: ${err.message}`);
+    if (mode === "deep") return normalizeResult({ verdict: "suspicious",
+      review: { status: "inconclusive", reason: "The deep scan could not reach the inspection service. Safety is undetermined." }
+    }, url, mode, "unavailable");
     return normalizeResult({ verdict: "suspicious", score: null,
       reasons: ["Trust score unavailable. Start the TrustLine daemon and check its Jev configuration."] }, url, mode, "unavailable");
   }
@@ -245,7 +271,7 @@ async function scanTab(tabId, url, mode = "quick") {
       const tab = await chrome.tabs.get(tabId).catch(() => null);
       if (!tab || tab.url !== url) return result;
       await chrome.storage.session.set({ [resultKey(tabId)]: result });
-      await applyActionState(tabId, result.verdict);
+      await applyActionState(tabId, result.assessment || result.verdict);
       // A user may retry a previously inconclusive proxy check from the popup.
       // Release that checking tab on approval even if its page stopped polling.
       const current = new URL(url);
@@ -279,7 +305,8 @@ function warningPageUrl(targetUrl, result, reason) {
   const page = new URL(base);
   page.searchParams.set("url", targetUrl);
   page.searchParams.set("verdict", result?.verdict ?? "dangerous");
-  if (typeof result?.score === "number") page.searchParams.set("score", String(result.score));
+  const undetermined = result?.assessment === "undetermined" || result?.review?.status === "inconclusive";
+  if (!undetermined && typeof result?.score === "number") page.searchParams.set("score", String(result.score));
   page.searchParams.set("reason", reason ?? result?.reasons?.[0] ?? "This site was flagged by TrustLine");
   // Full context so the warning page can render an itemized threat breakdown.
   const reasons = [...(reason ? [reason] : []), ...(result?.reasons ?? [])];
@@ -288,6 +315,10 @@ function warningPageUrl(targetUrl, result, reason) {
   // Lets the warning page describe what a Deep scan actually saw on the site.
   if (result?.mode) page.searchParams.set("mode", result.mode);
   if (result?.review?.status) page.searchParams.set("review", result.review.status);
+  if (undetermined) {
+    page.searchParams.set("review", "inconclusive");
+    page.searchParams.set("review_reason", result?.review?.reason || result?.reasons?.[0] || "The deep scan could not finish.");
+  }
   if (result?.review?.page_features) page.searchParams.set("features", JSON.stringify(result.review.page_features));
   if (result?.scannedAt) page.searchParams.set("ts", String(result.scannedAt));
   return page.toString();
@@ -387,6 +418,7 @@ async function applyActionState(tabId, status) {
       safe: "TrustLine: this site looks safe",
       suspicious: "TrustLine: this site looks suspicious",
       dangerous: "TrustLine: this site looks dangerous",
+      undetermined: "TrustLine: safety undetermined",
       idle: "TrustLine",
     };
     await chrome.action.setTitle({ ...details, title: titles[status] ?? titles.idle });
@@ -418,7 +450,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     // scanNavigation stores its result under the destination before forwarding;
     // keep that one so the page isn't scanned a second time.
     const { [resultKey(tabId)]: kept } = await chrome.storage.session.get(resultKey(tabId));
-    if (kept?.url !== changeInfo.url) {
+    if (kept?.url !== resultTarget(changeInfo.url)) {
       await chrome.storage.session.remove(resultKey(tabId));
       await applyActionState(tabId, "idle");
     }
@@ -430,7 +462,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
   const { [resultKey(tabId)]: cached } = await chrome.storage.session.get(resultKey(tabId));
   if (cached?.schemaVersion === 2 && cached.url === tab.url && Date.now() - cached.scannedAt < CONFIG.RESULT_TTL_MS) {
-    await applyActionState(tabId, cached.verdict);
+    await applyActionState(tabId, cached.assessment || (cached.review?.status === "inconclusive" ? "undetermined" : cached.verdict));
     return;
   }
   scanTab(tabId, tab.url, "quick").catch((err) => console.warn("[TrustLine] Auto-scan failed:", err));
@@ -472,10 +504,13 @@ const handlers = {
     const keys = [resultKey(tabId), scanKey(tabId)];
     const stored = await chrome.storage.session.get(keys);
     const result = stored[resultKey(tabId)];
+    // The warning page represents the destination whose result was just stored.
+    // Show that result in the popup even though extension pages cannot be scanned.
+    const resultUrl = resultTarget(tab.url);
     const daemon = await checkDaemon();
     return {
-      tab: { url: tab.url ?? "", domain: hostnameOf(tab.url ?? ""), scannable: isScannableUrl(tab.url) },
-      result: result?.schemaVersion === 2 && result.url === tab.url ? result : null,
+      tab: { url: tab.url ?? "", domain: hostnameOf(resultUrl ?? ""), scannable: isScannableUrl(tab.url) },
+      result: result?.schemaVersion === 2 && result.url === resultUrl ? result : null,
       scanning: stored[scanKey(tabId)] ?? null,
       daemon: { online: daemon.online, version: daemon.version, baseUrl: CONFIG.DAEMON_BASE_URL },
       settings: await getSettings(),
@@ -506,7 +541,7 @@ const handlers = {
     if (result === null) return { action: "review" };
     if (tabId !== undefined) {
       await chrome.storage.session.set({ [resultKey(tabId)]: result });
-      await applyActionState(tabId, result.verdict);
+      await applyActionState(tabId, result.assessment || result.verdict);
     }
     // With the daemon offline there is no verdict to act on; let the page load
     // rather than stopping every site, and check it again on the next visit.
@@ -528,7 +563,7 @@ const handlers = {
     const url = sender.tab?.url;
     if (tabId === undefined || !isScannableUrl(url)) throw new Error("This page can't be scanned");
     const result = await scanTab(tabId, url, "deep");
-    return { verdict: result.verdict, score: result.score, reason: result.reasons[0] ?? "" };
+    return { verdict: result.verdict, assessment: result.assessment, score: result.score, reason: result.reasons[0] ?? "" };
   },
 
   async testRedirect({ tabId }) {

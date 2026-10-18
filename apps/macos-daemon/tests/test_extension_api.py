@@ -119,7 +119,7 @@ class ExtensionAPITests(unittest.IsolatedAsyncioTestCase):
 
     def test_reviewed_score_combines_url_page_and_block(self):
         for score, page, status, expected in [(73, None, "allow", 73), (73, 0.6, "allow", 40),
-                                              (20, 0.1, "allow", 20), (None, 0.25, "inconclusive", 75),
+                                              (20, 0.1, "allow", 20), (None, 0.25, "inconclusive", None),
                                               (92, None, "block", 39), (92, 0.05, "block", 39),
                                               (12, None, "block", 12), (None, None, "block", None)]:
             with self.subTest(score=score, page=page, status=status):
@@ -192,7 +192,7 @@ class ExtensionAPITests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("unsure", result)
         self.reviewer.review.assert_not_awaited()
 
-    async def test_navigation_block_caps_score_and_inconclusive_keeps_the_address_verdict(self):
+    async def test_navigation_block_caps_score_and_inconclusive_is_unscored(self):
         self.low_score()
         self.reviewer.review.return_value["verdict"] = "block"
         result = await self.api.analyze("https://ordinary.example/", "navigate")
@@ -203,8 +203,24 @@ class ExtensionAPITests(unittest.IsolatedAsyncioTestCase):
         result = await self.api.analyze("https://ordinary.example/other", "navigate")
         result["review"] = await self.finish_review(result)
         self.api.apply_review(result, keep_url_verdict=True)
-        self.assertEqual((result["verdict"], result["score"]), ("suspicious", 50))
+        self.assertEqual((result["verdict"], result["score"]), ("suspicious", None))
         self.assertEqual(result["jev_status"], "uncertain")
+
+    async def test_failed_deep_scan_hides_address_scores_and_percentages_in_later_results(self):
+        self.reviewer.review.side_effect = RuntimeError("Unavailable")
+        for index, probability in enumerate([0.09, 0.91]):
+            self.low_score(probability)
+            url = f"https://ordinary.example/failed-{index}"
+            pending = await self.api.analyze(url, "deep")
+            await self.finish_review(pending)
+            for mode in ["quick", "navigate"]:
+                result = await self.api.analyze(url, mode)
+                self.assertEqual(result["review"]["status"], "inconclusive")
+                self.assertEqual(result["assessment"], "undetermined")
+                self.assertIsNone(result["score"])
+                self.assertIsNone(result["score_source"])
+                self.assertNotIn("%", " ".join(result["reasons"]))
+                self.assertFalse(self.proxy.reviews.allowed(url, "main_frame", "GET"))
 
     def test_jev_confidence_is_the_noul_distance_from_even(self):
         for probability, expected in [(0.5, 0.0), (0.07, 0.86), (0.95, 0.9), (0.0, 1.0), (None, None)]:
@@ -285,13 +301,42 @@ class ExtensionAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("review", result)
         self.reviewer.review.assert_not_awaited()
 
-    async def test_an_unrecognized_money_site_without_cloud_review_opens_with_the_prompt(self):
+    async def test_an_unrecognized_money_site_is_held_when_the_cloud_check_cannot_run(self):
         self.proxy.reviews.reviewer = None
         self.money_site(0.03, 0.1)
         result = await self.api.analyze("https://smallbroker.example/", "navigate")
+        self.assertEqual(result["verdict"], "suspicious")
+        self.assertTrue(result["cloud_required"])
+        self.assertNotIn("unsure", result)
+        self.assertNotIn("review", result)
+        self.assertEqual(result["assessment"], "undetermined")
+        self.assertIsNone(result["score"])
+        self.assertNotIn("%", " ".join(result["reasons"]))
+
+    async def test_an_unrecognized_money_site_is_held_when_the_cloud_check_cannot_decide(self):
+        self.money_site(0.07, 0.03)  # edgetrustcapital.com: score 93, money, unrecognized
+        self.reviewer.review.return_value["verdict"] = "inconclusive"
+        url = "https://edgetrustcapital.example/"
+        pending = await self.api.analyze(url, "navigate")
+        self.assertTrue(pending["cloud_required"])
+        await self.finish_review(pending)
+        result = await self.api.analyze(url, "navigate")
+        self.assertEqual((result["review"]["status"], result["verdict"]), ("inconclusive", "suspicious"))
+
+    async def test_holding_an_unchecked_money_site_never_softens_a_dangerous_verdict(self):
+        self.proxy.reviews.reviewer = None
+        self.money_site(0.89, 0.04)  # blackpinkofficial.store: flagged, 78% confident
+        result = await self.api.analyze("https://blackpinkofficial.example/", "navigate")
+        self.assertEqual(result["verdict"], "dangerous")
+        self.assertTrue(result["cloud_required"])
+
+    async def test_a_recognized_money_site_still_opens_with_the_prompt_without_cloud_review(self):
+        self.proxy.reviews.reviewer = None
+        self.money_site(0.2, 0.95)
+        result = await self.api.analyze("https://bigbank.example/", "navigate")
         self.assertEqual(result["verdict"], "safe")
         self.assertTrue(result["unsure"])
-        self.assertNotIn("review", result)
+        self.assertNotIn("cloud_required", result)
 
     async def test_unsure_is_only_reported_for_navigation(self):
         for mode in ["quick", "deep"]:
@@ -375,3 +420,47 @@ class ExtensionHTTPTests(AsyncHTTPTestCase):
         response = self.fetch("/v1/reviews/" + result["review"]["token"])
         self.assertEqual(json.loads(response.body)["status"], "allow")
         self.reviewer.review.assert_awaited_once_with("https://ordinary.example/")
+
+
+class ExtensionDebugHTTPTests(AsyncHTTPTestCase):
+    def get_app(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.proxy, self.jev, self.reviewer = fixture(self.directory.name)
+        self.api = ExtensionAPI(self.proxy)
+        return application(self.api, debug_state=True)
+
+    def tearDown(self):
+        self.proxy.done()
+        self.proxy.executor.shutdown(wait=True)
+        super().tearDown()
+        self.directory.cleanup()
+
+    def test_debug_state_lists_settings_jev_cache_and_reviews(self):
+        self.fetch("/v1/analyze", method="POST", body=json.dumps({"url": "https://ordinary.example/", "mode": "deep"}),
+                   headers={"Content-Type": "application/json"})
+        state = json.loads(self.fetch("/v1/debug/state").body)
+        self.assertEqual(state["settings"]["navigation_confidence"], 0.85)
+        self.assertEqual(state["settings"]["reasoning_effort"], "high")
+        self.assertEqual(state["jev"]["recent"][0]["origin"], "https://ordinary.example")
+        self.assertEqual(state["jev"]["recent"][0]["probability"], 0.27)
+        self.assertEqual(state["reviews"]["total"], 1)
+        self.assertEqual(state["reviews"]["recent"][0]["url"], "https://ordinary.example/")
+
+    def test_debug_state_is_loopback_and_extension_only_like_every_route(self):
+        self.assertEqual(self.fetch("/v1/debug/state", headers={"Origin": "https://attacker.example"}).code, 403)
+
+
+class ExtensionDebugOffTests(AsyncHTTPTestCase):
+    def get_app(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.proxy, _, _ = fixture(self.directory.name)
+        return application(ExtensionAPI(self.proxy))
+
+    def tearDown(self):
+        self.proxy.done()
+        self.proxy.executor.shutdown(wait=True)
+        super().tearDown()
+        self.directory.cleanup()
+
+    def test_debug_state_does_not_exist_unless_debug_mode_is_on(self):
+        self.assertEqual(self.fetch("/v1/debug/state").code, 404)

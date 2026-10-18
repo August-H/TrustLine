@@ -3,11 +3,13 @@
 import asyncio
 import json
 import re
+import time
 from urllib.parse import urlsplit, urlunsplit
 
 from tornado.httpserver import HTTPServer
 from tornado.web import Application, RequestHandler
 
+from . import debug
 from .inspection import Observation
 from .reviews import request_key
 
@@ -28,10 +30,14 @@ MODES = {"quick", "deep", "navigate"}
 # A money site (crypto, banking, investing, payments, loans or shopping) that Jev
 # does not recognize as a well-known organization (recognized probability under
 # RECOGNIZED_THRESHOLD) always gets the cloud check first, however good its
-# address looks. Only a confident "fake" verdict skips straight to the warning.
+# address looks, and opens only on a finished "allow". If that check fails or
+# can't decide, the page is held on the warning page (verdict "suspicious").
+# Only a confident "fake" verdict skips straight to the warning.
 NAVIGATION_CONFIDENCE = 0.85
 PASSING_SCORE = 70
 RECOGNIZED_THRESHOLD = 0.8
+CLOUD_REQUIRED_REASON = ("TrustLine couldn't finish checking this unrecognized financial site, "
+                         "so it's holding the page for you to decide.")
 
 
 def jev_confidence(probability):
@@ -130,8 +136,19 @@ class ExtensionAPI:
                 if approved is not None:
                     data["review"] = approved
                     self.apply_review(data, keep_url_verdict=True)
-        if (mode == "navigate" and passing and not verified
-                and data.get("review", {}).get("status") not in {"allow", "block"}):
+        review_status = data.get("review", {}).get("status")
+        # An unrecognized money site needs a finished cloud verdict to open. If the
+        # check can't run or can't decide, the page is held on the warning page.
+        cloud_required = mode == "navigate" and unrecognized_money and not confident_flag
+        if cloud_required:
+            data["cloud_required"] = True
+        if cloud_required and review_status in {None, "inconclusive"}:
+            # Hold the page, but never soften an address verdict that is already "dangerous".
+            if data["verdict"] != "dangerous":
+                data["verdict"] = "suspicious"
+            data["reasons"] = [*data["reasons"], CLOUD_REQUIRED_REASON]
+        elif (mode == "navigate" and passing and not verified
+                and review_status not in {"allow", "block"}):
             data["verdict"] = "safe"
             # Shown when a cloud check is unavailable or inconclusive, or was skipped.
             if not confident or result["status"] != "not_flagged" or unrecognized_money:
@@ -140,6 +157,15 @@ class ExtensionAPI:
                 data["reasons"] = [*data["reasons"],
                                    f"Jev is only {confidence:.0%} confident about this address. "
                                    "Run a deep scan to check the page itself."]
+        if review_status == "inconclusive" or (cloud_required and review_status is None):
+            mark_undetermined(data)
+        debug.log("analyze", mode=mode, url=debug.safe_url(target), jev=result["status"], p=probability,
+                  confidence=data["jev_confidence"], score=score, money=result.get("money_site"),
+                  recognized=result.get("recognized"), cached=result.get("cached"),
+                  cloud=(needs_cloud if mode == "navigate" else mode == "deep") and not verified,
+                  verdict=data["verdict"], unsure=data.get("unsure", False),
+                  cloud_required=data.get("cloud_required", False),
+                  review=data.get("review", {}).get("status"))
         return data
 
     def navigation_review(self, target):
@@ -184,12 +210,52 @@ class ExtensionAPI:
         return {"status": "allow", "page_probability": None, "evidence": [],
                 "reason": "TrustLine checked this page in a cloud browser in the last 24 hours."}
 
+    def debug_state(self):
+        """Settings, Jev cache and review queue for the debug console. No secrets."""
+        from .chatgpt import REASONING_EFFORT
+        inspector, reviews = self.proxy.inspector, self.proxy.reviews
+        jev, now = inspector.jev, time.monotonic()
+        model = getattr(jev, "model", None)
+        retry_at = getattr(jev, "_retry_at", 0)
+        recent = []
+        for (origin, _method, _kind), (expiry, result) in list(inspector.cache.items())[-10:]:
+            probability = result.get("probability")
+            recent.append({"origin": origin, "status": result["status"], "probability": probability,
+                           "confidence": jev_confidence(probability), "money_site": result.get("money_site"),
+                           "recognized": result.get("recognized"), "expires_in": max(0, round(expiry - now))})
+        rows = list(reviews.records.values())
+        return {
+            "version": "0.2.0", "debug_log": str(debug.log_path()),
+            "settings": {
+                "jev_model": model if isinstance(model, str) else None,
+                "threshold": inspector.threshold, "money_threshold": inspector.money_threshold,
+                "navigation_confidence": NAVIGATION_CONFIDENCE, "passing_score": PASSING_SCORE,
+                "recognized_threshold": RECOGNIZED_THRESHOLD,
+                "cloud_review": reviews.reviewer is not None, "reasoning_effort": REASONING_EFFORT,
+            },
+            "jev": {
+                "api_key_configured": isinstance(getattr(jev, "api_key", None), str) and bool(jev.api_key),
+                "cooldown_seconds": max(0.0, retry_at - now) if isinstance(retry_at, (int, float)) else 0.0,
+                "cache_entries": len(inspector.cache), "recent": recent[::-1],
+            },
+            "api": {"pending": self.pending},
+            "reviews": {
+                "pending": sum(row.status == "pending" for row in rows), "total": len(rows),
+                "recent": [{"token": row.token[:6], "url": debug.safe_url(row.url), "status": row.status,
+                            "age_seconds": round(now - row.created), "reason": row.reason[:200],
+                            "page_probability": row.page_probability} for row in rows[-8:][::-1]],
+            },
+        }
+
     @staticmethod
     def apply_review(data, keep_url_verdict=False):
         review = data["review"]
-        # Before a page opens, a cloud check that could not decide falls back to
-        # the address check rather than holding every such page.
-        if keep_url_verdict and review["status"] == "inconclusive":
+        if review["status"] == "inconclusive":
+            mark_undetermined(data)
+            # Retain the address verdict only for navigation policy. The displayed
+            # assessment remains undetermined and has no numeric score.
+            if not keep_url_verdict:
+                data["verdict"] = "suspicious"
             return data
         if review["status"] != "pending":
             data["verdict"] = {"allow": "safe", "block": "dangerous"}.get(review["status"], "suspicious")
@@ -200,6 +266,8 @@ class ExtensionAPI:
 
 def reviewed_score(score, review):
     """The lower of the URL and page scores; a blocked page never scores above Dangerous."""
+    if review["status"] == "inconclusive":
+        return None
     page = review.get("page_probability")
     if page is not None:
         page_score = round((1 - page) * 100)
@@ -207,6 +275,15 @@ def reviewed_score(score, review):
     if review["status"] == "block" and score is not None:
         score = min(score, BLOCKED_MAX_SCORE)
     return score
+
+
+def mark_undetermined(data):
+    # Keep the address verdict for navigation policy, but do not present its
+    # probability as an assessment of a page the deep scan could not inspect.
+    data["assessment"] = "undetermined"
+    data["score"] = data["score_source"] = None
+    data["reasons"] = [data.get("review", {}).get("reason") or
+                       "The deep scan could not finish. This website's safety is undetermined."]
 
 
 class APIHandler(RequestHandler):
@@ -273,6 +350,11 @@ class AnalyzeHandler(APIHandler):
         self.finish(result)
 
 
+class DebugStateHandler(APIHandler):
+    def get(self):
+        self.finish(self.api.debug_state())
+
+
 class ReviewHandler(APIHandler):
     def get(self, token):
         snapshot = self.api.proxy.reviews.snapshot(token)
@@ -283,16 +365,20 @@ class ReviewHandler(APIHandler):
             self.finish(snapshot)
 
 
-def application(api):
-    return Application([
+def application(api, debug_state=False):
+    routes = [
         (r"/health", HealthHandler, {"api": api}),
         (r"/v1/analyze", AnalyzeHandler, {"api": api}),
         (r"/v1/reviews/([A-Za-z0-9_-]+)", ReviewHandler, {"api": api}),
-    ], log_function=lambda handler: None)
+    ]
+    if debug_state:
+        # Only in debug mode, and like every route here, loopback-only.
+        routes.append((r"/v1/debug/state", DebugStateHandler, {"api": api}))
+    return Application(routes, log_function=lambda handler: None)
 
 
-def start_api(proxy, port):
-    server = HTTPServer(application(ExtensionAPI(proxy)), max_body_size=16384,
+def start_api(proxy, port, debug_state=False):
+    server = HTTPServer(application(ExtensionAPI(proxy), debug_state=debug_state), max_body_size=16384,
                         max_header_size=8192, body_timeout=10, idle_connection_timeout=15)
     server.listen(port, address="127.0.0.1")
     return server
