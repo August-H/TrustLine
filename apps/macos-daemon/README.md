@@ -72,7 +72,8 @@ a link by screenshot coordinates, navigate within the same origin, and finish
 with `allow`, `block`, or `inconclusive`. Selecting a link resolves its URL and
 performs guarded navigation, rather than executing an arbitrary button handler.
 This is a custom browser agent, with the model hosted by OpenAI and the browser
-hosted by Cloudflare.
+hosted by Cloudflare. Every request asks for high reasoning effort
+(`REASONING_EFFORT` in `chatgpt.py`).
 
 ```sh
 .venv/bin/python run.py chatgpt-status

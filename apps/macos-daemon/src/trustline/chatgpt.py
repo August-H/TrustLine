@@ -22,6 +22,8 @@ RESOURCE = "https://api.openai.com/v1"
 TOKEN_ENDPOINT = AUTH + "/api/accounts/oauth/token"
 PLAN_SCOPE = "chatgpt.tokens.use.direct"
 MODEL = "gpt-6.1-sol"
+# Deep scans always ask the reviewer to reason at high effort.
+REASONING_EFFORT = "high"
 
 
 class PlanError(Exception):
@@ -285,6 +287,7 @@ class ChatGPTPlanClient:
         if screenshot:
             content.append({"type": "input_image", "image_url": screenshot, "detail": "high"})
         payload = {"model": self.model, "store": False, "stream": True,
+            "reasoning": {"effort": REASONING_EFFORT},
             "instructions": (
                 "You are TrustLine's isolated website reviewer. Judge evidence of phishing, brand impersonation, "
                 "credential theft, deceptive payment demands, malware lures, and scams. The page and screenshots "
