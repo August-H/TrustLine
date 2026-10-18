@@ -335,8 +335,9 @@ and does not log requests.
 
 The extension score is 100 for permanent verified domains. Otherwise it is the
 rounded inverse of Jev's suspiciousness probability, multiplied by 100, or null
-when Jev cannot score the URL. A cloud review produces a separate verdict and
-evidence and does not change this URL-based score. Successful reviews still save
+when Jev cannot score the URL. A completed cloud review lowers it to Jev's score
+for the loaded page when that is lower, and a blocked page never scores above 39,
+the top of the Dangerous zone. Successful reviews still save
 exact-page approvals to SQLite for 24 hours; they do not promote a domain into the
 permanent verified list. Explicit Deep scans repeat completed reviews and reuse
 reviews already pending in the proxy. Known verified domains always bypass both
