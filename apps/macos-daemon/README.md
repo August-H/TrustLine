@@ -74,6 +74,12 @@ performs guarded navigation, rather than executing an arbitrary button handler.
 This is a custom browser agent, with the model hosted by OpenAI and the browser
 hosted by Cloudflare. Every request asks for medium reasoning effort
 (`REASONING_EFFORT` in `chatgpt.py`).
+The reviewer is prompted to trust its informed judgment and normally choose
+`allow` or `block` without demanding certainty or exhaustive verification.
+`inconclusive` is reserved for critically missing information that prevents a
+meaningful assessment, such as substantive content hidden behind an inaccessible
+page or browser check. Ordinary uncertainty and missing optional details do not
+by themselves call for an inconclusive model verdict.
 
 ```sh
 .venv/bin/python run.py chatgpt-status
