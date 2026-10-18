@@ -42,9 +42,7 @@ const el = {
   pillLabel: $("daemonLabel"),
   statusIcon: $("statusIcon"),
   verdict: $("verdict"),
-  verdictMeta: $("verdictMeta"),
   scoreValue: $("scoreValue"),
-  scoreHelper: $("scoreHelper"),
   track: $("meterTrack"),
   fill: $("meterFill"),
   signals: $("signals"),
@@ -85,15 +83,6 @@ async function refresh() {
 
 /* ------------------------------------------------------------ rendering */
 
-function timeAgo(ts) {
-  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
-  if (s < 10) return "just now";
-  if (s < 60) return `${s}s ago`;
-  const m = Math.round(s / 60);
-  if (m < 60) return `${m}m ago`;
-  return `${Math.round(m / 60)}h ago`;
-}
-
 function setVerdictText(prefix, domain, suffix) {
   const strong = document.createElement("strong");
   strong.textContent = domain;
@@ -123,7 +112,7 @@ function render() {
     el.pillLabel.textContent = EXTENSION ? "Connecting…" : "Standalone preview";
   } else if (state.daemon.online) {
     el.pill.dataset.state = "online";
-    el.pillLabel.textContent = "Daemon active";
+    el.pillLabel.textContent = "Active";
     el.pill.title = `Connected to ${state.daemon.baseUrl}${state.daemon.version ? ` (v${state.daemon.version})` : ""}`;
   } else {
     el.pill.dataset.state = "mock";
@@ -138,34 +127,23 @@ function render() {
     const [pre, post] = VERDICT_COPY[result.verdict];
     el.statusIcon.innerHTML = ICONS[result.verdict];
     setVerdictText(pre, result.domain, post);
-    const sourceLabel = result.verified ? "Verified database" : typeof result.review?.page_probability === "number" ? "Jev URL and page score" :
-      { daemon: "Jev URL score", unavailable: "Score unavailable", demo: "Demo preview" }[result.source] ?? "";
-    const modeLabel = result.review ? "Cloudflare deep scan" : result.source === "demo" ? "" : "Quick scan";
-    const parts = [modeLabel, sourceLabel, result.scannedAt ? timeAgo(result.scannedAt) : ""].filter(Boolean);
-    el.verdictMeta.textContent = parts.join(" · ");
   } else if (view.kind === "pending") {
     el.statusIcon.innerHTML = ICONS.pending;
     el.verdict.replaceChildren(document.createTextNode("Checking "), Object.assign(document.createElement("strong"), { textContent: state.tab.domain }), document.createTextNode("…"));
-    el.verdictMeta.textContent = view.scanning ? "Reviewing in Cloudflare Browser Run" : "Checking the verified database and Jev";
   } else {
     el.statusIcon.innerHTML = ICONS.idle;
     el.verdict.textContent = "TrustLine can't scan this page";
-    el.verdictMeta.textContent = "Open a website to see its trust score";
   }
 
   // Trust meter
   const score = view.kind === "result" ? view.result.score : null;
   el.scoreValue.textContent = score === null ? "--" : String(score);
-  el.scoreHelper.textContent = view.kind === "result" && view.result.source === "demo" ? "Demo score for preview only" :
-    view.kind === "result" && view.result.verified ? "100: domain in the verified database" :
-    score === null ? "No score available" :
-    view.kind === "result" && view.result.review?.status === "block" ? "Deep scan blocked this page, so the score is at most 39" :
-    view.kind === "result" && typeof view.result.review?.page_probability === "number" ? "Lower of the Jev URL and page scores" :
-    "Jev URL score: 100 × (1 − suspiciousness)";
   el.fill.style.width = `${score ?? 0}%`;
   el.track.setAttribute("aria-valuenow", String(score ?? 0));
 
-  const reasons = view.kind === "result" ? view.result.reasons ?? [] : [];
+  // Never show scoring formulas (e.g. "100 × (1 − …)") as if they were reasons.
+  const reasons = (view.kind === "result" ? view.result.reasons ?? [] : [])
+    .filter((r) => !/×|\(1\s*[−-]/.test(r));
   el.signals.hidden = reasons.length === 0;
   el.signals.replaceChildren(
     ...reasons.map((r) => Object.assign(document.createElement("li"), { textContent: r }))
@@ -252,7 +230,7 @@ async function setAutoScan(enabled) {
 
 async function testRedirect() {
   if (!EXTENSION) {
-    state.error = "Warning redirect is only available inside Chrome";
+    state.error = "Site Report is only available inside Chrome";
     render();
     return;
   }
