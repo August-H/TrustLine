@@ -18,18 +18,21 @@
         </p>
 
         <div class="band-body">
-          <svg class="band-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <!-- One icon per verdict; CSS shows the one matching body[data-status]. -->
+          <svg class="band-icon" data-theme="dangerous" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M8.2 2h7.6L22 8.2v7.6L15.8 22H8.2L2 15.8V8.2Z" />
             <path d="M12 7v6M12 16.5v.01" />
           </svg>
-          <div class="band-text">
-            <h1 id="title">This site may be dangerous</h1>
-            <p class="lead" id="lead">TrustLine flagged this website. It looks like a scam or fake website.</p>
-          </div>
-          <div class="band-cta">
-            <button type="button" class="go-back" id="back">Take me back to safety</button>
-            <p class="cta-note">Avoid entering passwords or payment details.</p>
-          </div>
+          <svg class="band-icon" data-theme="suspicious" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+            <path d="M12 9v4M12 17v.01" />
+          </svg>
+          <svg class="band-icon" data-theme="safe" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2 4 5v6c0 5.1 3.4 9.4 8 11 4.6-1.6 8-5.9 8-11V5l-8-3Z" />
+            <path d="m8.5 12 2.5 2.5 4.5-5" />
+          </svg>
+          <h1 id="title">This site may be dangerous</h1>
+          <button type="button" class="go-back" id="back">Take me back to safety</button>
         </div>
       </div>
     </header>
@@ -74,11 +77,10 @@
               <span class="score-marker" id="score-marker"></span>
             </div>
             <div class="score-scale" aria-hidden="true">
-              <span data-zone="dangerous">Dangerous</span>
-              <span data-zone="suspicious">Suspicious</span>
-              <span data-zone="safe">Safe</span>
+              <span data-zone="dangerous">Dangerous<small>0 – 39</small></span>
+              <span data-zone="suspicious">Suspicious<small>40 – 69</small></span>
+              <span data-zone="safe">Safe<small>70 – 100</small></span>
             </div>
-            <p class="score-note" id="score-note"></p>
           </section>
         </div>
 
@@ -86,7 +88,6 @@
           <section class="override" id="override" aria-labelledby="override-title">
             <header class="override-head">
               <h2 class="override-title" id="override-title">Think this is a mistake?</h2>
-              <p class="override-sub">Three steps to open it anyway</p>
             </header>
 
             <ol class="steps">
@@ -107,7 +108,7 @@
                   <p class="step-title">Wait, then verify the address</p>
                   <div class="cooldown" aria-live="polite">
                     <div class="cooldown-track"><div class="cooldown-fill" id="cooldown-fill"></div></div>
-                    <span class="cooldown-text" id="cooldown-text">Cooldown starts after step 1</span>
+                    <span class="cooldown-text" id="cooldown-text"></span>
                   </div>
                   <label class="field-label" for="confirm-host">
                     Type the flagged hostname exactly. Check every character for look-alike tricks.
@@ -123,7 +124,7 @@
                     spellcheck="false"
                     disabled
                   />
-                  <p class="field-hint" id="confirm-hint">Pasting is disabled. Type it out by hand.</p>
+                  <p class="field-hint" id="confirm-hint" aria-live="polite"></p>
                 </div>
               </li>
 

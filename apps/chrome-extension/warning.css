@@ -16,6 +16,7 @@
   --caution-tint: #fff4d6;
   --go: #1e6b47;
   --go-hover: #17553a;
+  --go-tint: #e3f1ea;
 
   /* The band and marks follow the verdict. */
   --signal: var(--stop);
@@ -30,6 +31,11 @@
 body[data-status="suspicious"] {
   --signal: var(--caution);
   --signal-tint: var(--caution-tint);
+}
+
+body[data-status="safe"] {
+  --signal: var(--go);
+  --signal-tint: var(--go-tint);
 }
 
 * { box-sizing: border-box; }
@@ -84,8 +90,9 @@ button { font: inherit; cursor: pointer; }
 }
 
 .band-icon {
-  width: 56px;
-  height: 56px;
+  display: none;
+  width: 68px;
+  height: 68px;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.8;
@@ -93,11 +100,11 @@ button { font: inherit; cursor: pointer; }
   stroke-linecap: round;
 }
 
-h1 { font-size: 36px; font-weight: 800; line-height: 1.1; letter-spacing: -0.01em; }
-.lead { margin-top: 4px; font-size: 17px; }
-.lead strong { font-weight: 800; }
+body[data-status="dangerous"] .band-icon[data-theme="dangerous"],
+body[data-status="suspicious"] .band-icon[data-theme="suspicious"],
+body[data-status="safe"] .band-icon[data-theme="safe"] { display: block; }
 
-.band-cta { display: grid; gap: 6px; justify-items: center; }
+h1 { font-size: 46px; font-weight: 800; line-height: 1.05; letter-spacing: -0.015em; }
 
 .go-back {
   min-height: 56px;
@@ -111,7 +118,10 @@ h1 { font-size: 36px; font-weight: 800; line-height: 1.1; letter-spacing: -0.01e
 }
 .go-back:hover { background: var(--go-hover); }
 .go-back:focus-visible { outline-color: #ffffff; }
-.cta-note { font-size: 15px; }
+
+/* A green button would vanish on the green banner, so invert it there. */
+body[data-status="safe"] .go-back { background: #ffffff; color: var(--go); }
+body[data-status="safe"] .go-back:hover { background: var(--go-tint); }
 
 /* --------------------------------------------------------------- address */
 
@@ -257,7 +267,9 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
 
 .score-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
 .score-value { color: var(--muted); font-size: 17px; font-variant-numeric: tabular-nums; }
-.score-value strong { color: var(--signal); font-size: 24px; font-weight: 800; }
+.score-value strong { color: var(--stop); font-size: 24px; font-weight: 800; }
+.score[data-zone="suspicious"] .score-value strong { color: var(--caution); }
+.score[data-zone="safe"] .score-value strong { color: var(--go); }
 
 /* Three zones on a 0-100 scale; widths mirror the 40 / 70 thresholds. */
 .score-track {
@@ -271,7 +283,7 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
 .zone { border-radius: 3px; }
 .zone[data-zone="dangerous"] { background: var(--stop-tint); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--stop) 35%, transparent); }
 .zone[data-zone="suspicious"] { background: var(--caution-tint); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--caution) 30%, transparent); }
-.zone[data-zone="safe"] { background: #e3f1ea; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--go) 30%, transparent); }
+.zone[data-zone="safe"] { background: var(--go-tint); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--go) 30%, transparent); }
 
 /* Proportional fill from 0 to the score, coloured by the zone it lands in. */
 .score-fill {
@@ -307,8 +319,7 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
   font-size: 14px;
 }
 .score-scale span { padding-left: 2px; }
-
-.score-note { margin-top: 2px; color: var(--muted); font-size: 15px; }
+.score-scale small { display: block; font-size: 13px; font-variant-numeric: tabular-nums; }
 
 /* -------------------------------------------------------------- override */
 
@@ -323,7 +334,6 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
   border-bottom: 1px solid var(--rule);
 }
 .override-title { font-size: 18px; font-weight: 800; }
-.override-sub { color: var(--muted); font-size: 15px; }
 
 .steps { margin: 0; padding: 4px 0; list-style: none; }
 .step { display: grid; grid-template-columns: 26px 1fr; gap: 12px; padding: 7px 18px; }
@@ -353,6 +363,7 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
 .cooldown-track { height: 6px; border-radius: 3px; background: var(--rule); overflow: hidden; }
 .cooldown-fill { width: 0; height: 100%; background: var(--ink); }
 .cooldown-text { color: var(--muted); font-size: 14px; }
+.cooldown-text:empty { display: none; }
 .step[data-state="done"] .cooldown-fill { background: var(--go); }
 
 .field-label { display: block; margin-bottom: 2px; color: var(--muted); font-size: 15px; line-height: 1.4; }
@@ -372,6 +383,7 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
 #confirm-host[data-match="yes"] { border-color: var(--go); }
 #confirm-host[data-match="no"] { border-color: var(--stop); }
 .field-hint { margin-top: 2px; color: var(--muted); font-size: 14px; }
+.field-hint:empty { display: none; }
 
 .danger {
   width: 100%;
@@ -395,7 +407,7 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
   .grid { grid-template-columns: 1fr; gap: 24px; }
   .address-text { font-size: clamp(24px, calc((100vw - 64px) / (var(--chars, 24) * 0.68)), 56px); }
   .band-body { grid-template-columns: auto 1fr; }
-  .band-cta { grid-column: 1 / -1; justify-items: stretch; }
+  .go-back { grid-column: 1 / -1; }
 }
 
 @media (max-width: 720px) {
