@@ -145,11 +145,16 @@ class CloudflareBrowser:
             title: document.title.slice(0,300),
             text: (document.body?.innerText || '').slice(0,14000),
             links: Array.from(document.querySelectorAll('a[href]')).slice(0,40)
-                .map(a => ({text:(a.innerText || '').slice(0,100), url:a.href.split(/[?#]/)[0].slice(0,1000)})),
+                .map(a => ({text:(a.innerText || '').slice(0,100), url:a.href.split(/[?#]/)[0].slice(0,1000),
+                            download:a.hasAttribute('download')})),
             forms: Array.from(document.forms).slice(0,10).map(f => ({
                 method:f.method, action:f.action.split(/[?#]/)[0].slice(0,1000),
-                inputs:Array.from(f.elements).slice(0,20).map(e => ({type:e.type, name:e.name?.slice(0,80)}))
-            }))
+                inputs:Array.from(f.elements).slice(0,20).map(e => ({type:e.type, name:e.name?.slice(0,80),
+                                                                     autocomplete:(e.autocomplete || '').slice(0,40)}))
+            })),
+            // Many sign-in and checkout pages render fields outside a <form>.
+            fields: Array.from(document.querySelectorAll('input')).slice(0,60)
+                .map(e => ({type:e.type, name:e.name?.slice(0,80), autocomplete:(e.autocomplete || '').slice(0,40)}))
         })""")
         return {**state, "url": self.page.url.split("?", 1)[0].split("#", 1)[0],
                 "initial_origin": self.initial_origin, "initial_url": self.initial_url, "http_status": self.http_status,
@@ -203,6 +208,50 @@ class CloudflareBrowser:
                 await self.playwright.stop()
 
 
+SIGN_IN_FIELD = re.compile(r"passw|passcode|otp|one-time-code", re.I)
+PAYMENT_FIELD = re.compile(r"cc-|card|cvc|cvv|iban|routing|account.?num|expir", re.I)
+DOWNLOAD_FILE = re.compile(r"\.(exe|dmg|pkg|msi|apk|scr|bat|jar|zip)$", re.I)
+
+
+def field_kinds(fields):
+    hints = [f"{field.get('name') or ''} {field.get('autocomplete') or ''}" for field in fields]
+    sign_in = any(field.get("type") == "password" for field in fields) or any(SIGN_IN_FIELD.search(h) for h in hints)
+    return sign_in, any(PAYMENT_FIELD.search(h) for h in hints)
+
+
+def page_features(observations):
+    """What the reviewed pages ask of a visitor, from the fixed extraction code.
+
+    Plain facts for the warning page: whether the pages ask for a password or
+    card details, send either to a different site, or offer file downloads.
+    """
+    features = {"sign_in": False, "payment": False, "external_form": False, "downloads": False}
+    for observation in observations:
+        try:
+            page_origin = normalize_origin(observation.get("url", ""))[0]
+        except ValueError:
+            page_origin = None
+        sign_in, payment = field_kinds(observation.get("fields", []))
+        features["sign_in"] |= sign_in
+        features["payment"] |= payment
+        for form in observation.get("forms", []):
+            form_sign_in, form_payment = field_kinds(form.get("inputs", []))
+            features["sign_in"] |= form_sign_in
+            features["payment"] |= form_payment
+            if not (form_sign_in or form_payment):
+                continue
+            try:
+                action_origin = normalize_origin(form.get("action") or "")[0]
+            except ValueError:
+                action_origin = None
+            if page_origin and action_origin and action_origin != page_origin:
+                features["external_form"] = True
+        for link in observation.get("links", []):
+            if link.get("download") or DOWNLOAD_FILE.search(link.get("url") or ""):
+                features["downloads"] = True
+    return features
+
+
 def page_state(observation):
     """The landing page as Jev sees it: no path, query, screenshot, or link targets."""
     origin, hostname = normalize_origin(observation["url"])
@@ -226,33 +275,35 @@ class RemoteReviewer:
 
     async def review(self, url):
         browser = self.browser_factory()
-        checks = []
+        checks, observations = [], []
         try:
             try:
-                result = await self.explore(browser, url, checks)
+                result = await self.explore(browser, url, checks, observations)
             except Exception:
                 page = await checks[0] if checks else None
                 # A scam Jev found on the page still blocks it if the cloud model fails.
                 if self.page_flagged(page):
-                    return self.page_block(page)
+                    return {**self.page_block(page), "page_features": page_features(observations)}
                 raise
             page = await checks[0] if checks else None
             # Jev finding a scam blocks the page even when the model would allow it.
             if self.page_flagged(page) and result["verdict"] != "block":
-                return self.page_block(page)
-            if page:
+                result = self.page_block(page)
+            elif page:
                 result["page_probability"] = page[0]
+            result["page_features"] = page_features(observations)
             return result
         finally:
             for check in checks:
                 check.cancel()
             await browser.close()
 
-    async def explore(self, browser, url, checks):
+    async def explore(self, browser, url, checks, observations):
         history = []
         await browser.start(url)
         for step in range(self.max_steps):
             observation = await browser.observe()
+            observations.append(observation)
             if not checks and self.jev is not None:
                 # Jev reads the landing page while the model decides its first action.
                 checks.append(asyncio.create_task(self.check_page(observation)))

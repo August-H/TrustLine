@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from trustline.inspection import JevError
 from trustline.reviews import ReviewManager, review_url
-from trustline.remote import CloudflareBrowser, RemoteError, RemoteReviewer, page_state, public_url
+from trustline.remote import CloudflareBrowser, RemoteError, RemoteReviewer, page_features, page_state, public_url
 
 
 class ReviewTests(unittest.IsolatedAsyncioTestCase):
@@ -152,6 +152,30 @@ class RemoteReviewerTests(unittest.IsolatedAsyncioTestCase):
         jev = Mock(assess_page=Mock(side_effect=JevError("Jev unavailable")))
         result = await RemoteReviewer(self.allowing_model(), lambda: browser, jev=jev).review("https://shop.example/")
         self.assertEqual(result["verdict"], "allow")
+
+    def test_page_features_describe_what_the_page_asks_for(self):
+        plain = page_features([{"url": "https://news.example/", "links": [{"url": "https://news.example/a"}]}])
+        self.assertEqual(plain, {"sign_in": False, "payment": False, "external_form": False, "downloads": False})
+        risky = page_features([{
+            "url": "https://bank.example/login",
+            "forms": [{"action": "https://collector.example/post",
+                       "inputs": [{"type": "text", "name": "user"}, {"type": "password", "name": "pw"}]}],
+            "fields": [{"type": "text", "name": "x", "autocomplete": "cc-number"}],
+            "links": [{"url": "https://bank.example/setup.exe"}],
+        }])
+        self.assertEqual(risky, {"sign_in": True, "payment": True, "external_form": True, "downloads": True})
+        # A same-site sign-in form is normal, and a download attribute counts as a download.
+        local = page_features([{"url": "https://mail.example/",
+                                "forms": [{"action": "https://mail.example/session",
+                                           "inputs": [{"type": "password"}]}],
+                                "links": [{"url": "https://mail.example/guide", "download": True}]}])
+        self.assertEqual(local, {"sign_in": True, "payment": False, "external_form": False, "downloads": True})
+
+    async def test_review_result_carries_page_features(self):
+        browser = self.browser(url="https://shop.example/", fields=[{"type": "password"}])
+        result = await RemoteReviewer(self.allowing_model(), lambda: browser).review("https://shop.example/")
+        self.assertEqual(result["verdict"], "allow")
+        self.assertTrue(result["page_features"]["sign_in"])
 
     def test_page_state_sends_only_origin_text_and_form_shape(self):
         state = page_state({

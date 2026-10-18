@@ -69,18 +69,9 @@ button { font: inherit; cursor: pointer; }
 .band-inner {
   max-width: 1220px;
   margin: 0 auto;
-  padding: 8px 32px 14px;
+  padding: 18px 32px;
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
-  font-size: 16px;
-  font-weight: 700;
-}
-.brand-mark { width: 20px; height: 20px; fill: currentColor; }
 
 .band-body {
   display: grid;
@@ -256,6 +247,8 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+/* Things the Deep scan found normal or absent get a calm green icon. */
+.risk[data-tone="clear"] .risk-icon { stroke: var(--go); }
 .risk h3 { font-size: 17px; font-weight: 800; line-height: 1.25; }
 .risk p { color: var(--muted); font-size: 15px; line-height: 1.4; }
 
