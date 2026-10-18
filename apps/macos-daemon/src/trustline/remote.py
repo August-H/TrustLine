@@ -154,7 +154,8 @@ class CloudflareBrowser:
             })),
             // Many sign-in and checkout pages render fields outside a <form>.
             fields: Array.from(document.querySelectorAll('input')).slice(0,60)
-                .map(e => ({type:e.type, name:e.name?.slice(0,80), autocomplete:(e.autocomplete || '').slice(0,40)}))
+                .map(e => ({type:e.type, name:e.name?.slice(0,80), autocomplete:(e.autocomplete || '').slice(0,40)})),
+            html: document.documentElement.outerHTML.slice(0,2000000)
         })""")
         return {**state, "url": self.page.url.split("?", 1)[0].split("#", 1)[0],
                 "initial_origin": self.initial_origin, "initial_url": self.initial_url, "http_status": self.http_status,
@@ -252,8 +253,38 @@ def page_features(observations):
     return features
 
 
-def page_state(observation):
-    """The landing page as Jev sees it: no path, query, screenshot, or link targets."""
+# Jev's limit is 32k tokens for the page plus one question. HTML is token-dense,
+# so cap it well under that, after the visible text (up to 14,000 characters).
+HTML_LIMIT = 48_000
+
+
+def _shorten_script(match):
+    body = match[2]
+    return match[1] + (body if len(body) <= 2000 else body[:2000] + "…") + match[3]
+
+
+def compact_html(html):
+    """The rendered page's HTML, made small enough for Jev.
+
+    Drops comments, CSS, SVG drawings and embedded base64 files, keeps the first
+    2,000 characters of each inline script, collapses whitespace, then caps it.
+    Hidden elements, form targets, link targets and script sources all remain.
+    """
+    if not isinstance(html, str):
+        return ""
+    html = re.sub(r"<!--.*?-->", "", html, flags=re.S)
+    html = re.sub(r"(<style\b[^>]*>).*?(</style>)", r"\1\2", html, flags=re.S | re.I)
+    html = re.sub(r"(<svg\b[^>]*>).*?(</svg>)", r"\1\2", html, flags=re.S | re.I)
+    html = re.sub(r"data:[\w/+.-]+;base64,[A-Za-z0-9+/=]+", "data:…", html)
+    html = re.sub(r"(<script\b[^>]*>)(.*?)(</script>)", _shorten_script, html, flags=re.S | re.I)
+    return re.sub(r"\s+", " ", html).strip()[:HTML_LIMIT]
+
+
+def page_state(observation, *, include_html=True):
+    """The landing page as Jev sees it: visible text, forms and compacted HTML.
+
+    No URL path, query or screenshot. The HTML does include link and form targets.
+    """
     origin, hostname = normalize_origin(observation["url"])
     forms = []
     for form in observation.get("forms", []):
@@ -263,8 +294,12 @@ def page_state(observation):
             action_origin = None
         forms.append({"method": form.get("method"), "action_origin": action_origin,
                       "inputs": form.get("inputs", [])})
-    return {"url_origin": origin, "hostname": hostname, "title": observation.get("title", ""),
-            "text": observation.get("text", ""), "forms": forms}
+    state = {"url_origin": origin, "hostname": hostname, "title": observation.get("title", ""),
+             "text": observation.get("text", ""), "forms": forms}
+    html = compact_html(observation.get("html")) if include_html else ""
+    if html:
+        state["html"] = html
+    return state
 
 
 class RemoteReviewer:
@@ -331,10 +366,17 @@ class RemoteReviewer:
 
     async def check_page(self, observation):
         """Return Jev's deceptive-page and money-site probabilities, or None if unavailable."""
+        page = page_state(observation)
         try:
-            return await asyncio.to_thread(self.jev.assess_page, page_state(observation))
+            return await asyncio.to_thread(self.jev.assess_page, page)
         except Exception:
-            # The cloud model's verdict stands alone when the page check is unavailable.
+            if "html" not in page:
+                # The cloud model's verdict stands alone when the page check is unavailable.
+                return None
+        try:
+            # The HTML may have pushed it past Jev's context limit: the visible page still counts.
+            return await asyncio.to_thread(self.jev.assess_page, page_state(observation, include_html=False))
+        except Exception:
             return None
 
     def page_flagged(self, page):

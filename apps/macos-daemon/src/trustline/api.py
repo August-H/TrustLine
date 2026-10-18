@@ -24,8 +24,14 @@ MODES = {"quick", "deep", "navigate"}
 # - less confident, but the trust score passes (>= PASSING_SCORE): opens with no
 #   cloud check, marked `unsure` so the extension offers a Deep scan.
 # - less confident and failing: the loading screen runs the cloud check.
+#
+# A money site (crypto, banking, investing, payments, loans or shopping) that Jev
+# does not recognize as a well-known organization (recognized probability under
+# RECOGNIZED_THRESHOLD) always gets the cloud check first, however good its
+# address looks. Only a confident "fake" verdict skips straight to the warning.
 NAVIGATION_CONFIDENCE = 0.85
 PASSING_SCORE = 70
+RECOGNIZED_THRESHOLD = 0.8
 
 
 def jev_confidence(probability):
@@ -77,24 +83,33 @@ class ExtensionAPI:
                    [f"TrustLine estimates a {probability:.1%} chance this web address is fake or misleading.",
                     "This quick check only looked at the web address, not the page itself."] if probability is not None else
                    [result.get("reason", "TrustLine score unavailable")])
-        if result.get("money_site") and not verified:
+        unrecognized_money = (not verified and result.get("money_site") is True
+                              and (result.get("recognized") or 0) < RECOGNIZED_THRESHOLD)
+        if unrecognized_money:
+            reasons.append("This looks like a money or shopping site TrustLine doesn't recognize, "
+                           "so it checks the page itself before it opens.")
+        elif result.get("money_site") and not verified:
             reasons.append("This looks like a money or shopping site, so TrustLine checks it more strictly.")
         data = {"verdict": "safe" if verified else verdict, "score": score,
                 "verified": verified, "score_source": "verified_database" if verified else "jev",
                 "jev_probability": probability, "jev_status": result["status"],
                 "jev_confidence": None if verified else jev_confidence(probability),
+                "recognized_probability": None if verified else result.get("recognized"),
                 "reasons": reasons, "target_url": target}
         confidence = data["jev_confidence"]
         confident = confidence is not None and confidence >= NAVIGATION_CONFIDENCE
         passing = (score is not None and score >= PASSING_SCORE
                    and result["status"] in {"not_flagged", "uncertain"})
+        confident_flag = confident and result["status"] == "suspicious"
+        needs_cloud = not verified and ((not passing and not confident)
+                                        or (unrecognized_money and not confident_flag))
         if mode == "deep" and not verified:
             row = self.proxy.reviews.start(target, force=not join_pending)
             if row is None:
                 raise ValueError("The cloud inspection queue is full. Try again shortly.")
             data["review"] = {"token": row.token, **self.proxy.reviews.snapshot(row.token)}
             self.apply_review(data)
-        elif mode == "navigate" and not verified and not passing and not confident:
+        elif mode == "navigate" and needs_cloud:
             review = self.navigation_review(target)
             if review is not None:
                 data["review"] = review
@@ -118,8 +133,10 @@ class ExtensionAPI:
         if (mode == "navigate" and passing and not verified
                 and data.get("review", {}).get("status") not in {"allow", "block"}):
             data["verdict"] = "safe"
-            if not confident or result["status"] != "not_flagged":
+            # Shown when a cloud check is unavailable or inconclusive, or was skipped.
+            if not confident or result["status"] != "not_flagged" or unrecognized_money:
                 data["unsure"] = True
+            if not confident or result["status"] != "not_flagged":
                 data["reasons"] = [*data["reasons"],
                                    f"Jev is only {confidence:.0%} confident about this address. "
                                    "Run a deep scan to check the page itself."]

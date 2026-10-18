@@ -30,10 +30,11 @@ have no `confidence` field, so the daemon uses TypeSafe's Noul conversion,
 
 | Jev confidence and trust score | What happens |
 | --- | --- |
-| 85%+ confident the address is fine (`NAVIGATION_CONFIDENCE`) | Opens with no cloud check. |
+| 85%+ confident the address is fine (`NAVIGATION_CONFIDENCE`) | Opens with no cloud check (unless it is an unrecognized money site; see the last row). |
 | 85%+ confident it is fake | Warning page, no cloud check. |
 | Under 85% confident, trust score 70+ (`PASSING_SCORE`) | Opens with no cloud check, then a prompt appears in the page's top-right corner, under the toolbar icon: "This website may not be safe. **Click Here** to run a deep scan." |
 | Under 85% confident, trust score under 70, or no score | Cloud check on the loading screen. |
+| A money site (crypto, banking, investing, payments, loans or shopping) Jev doesn't recognize as a well-known organization (`RECOGNIZED_THRESHOLD`), at any score | Cloud check on the loading screen, unless Jev is 85%+ confident it is fake. If the cloud can't decide or isn't set up, it opens with the prompt. |
 
 A cloud block from the last two minutes still applies at any score. The prompt
 (`nudge.js`) is injected with `chrome.scripting` into a closed shadow root, so the

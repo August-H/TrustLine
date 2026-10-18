@@ -22,7 +22,7 @@ class FakeJev:
         probability = 0.05 if observation.hostname in {
             "clean.invalid", "wrong-host.invalid", "untrusted.invalid",
         } else 0.95
-        return probability, 0.0
+        return probability, 0.0, 1.0
 
 
 class LocalRouting:

@@ -154,7 +154,11 @@ content. On those endings the question tells Jev to be sceptical: any further cu
 such as a brand, crypto, reward, login or support word, a service prefix like
 `app-`, or a random-looking name, is enough to flag it; the ending alone is not.
 Each request asks whether the metadata meets the stated suspicious-origin criteria, whether the hostname misspells a well-known name, and
-whether the site is about crypto, finance, or shopping. For the misspelling check,
+whether the site is about crypto, finance, or shopping, and (for hostnames, not IP
+addresses) whether it is the official domain of a widely recognized organization.
+The extension API sends a money site Jev does not recognize (under
+`RECOGNIZED_THRESHOLD` in `api.py`) to the cloud check before it opens, whatever its
+address score, and reports the answer as `recognized_probability`. For the misspelling check,
 code supplies candidate readings of the hostname with common substitutions undone
 (`visu4lstudio` reads as `visualstudio`). The higher of the first two
 probabilities is the result. It is not a separate severity score. These are Noul
@@ -167,8 +171,16 @@ loading screen skips the cloud check at 0.85 or more (`NAVIGATION_CONFIDENCE` in
 For remote review, Cloudflare receives the destination origin and path. OpenAI
 receives the remote browser's rendered text, page/link/form metadata, screenshots,
 and action history. Jev receives the landing page's origin, title, rendered text,
-and form fields (input types and names, and where each form submits), but no path,
-screenshot, or link targets. If Jev finds phishing or scam signs on the page above
+form fields (input types and names, and where each form submits), and the rendered
+page's HTML, but no URL path, query, or screenshot. The HTML is compacted to fit
+Jev's context (`compact_html` in `remote.py`): comments, CSS, SVG drawings and
+embedded base64 files are removed, each inline script keeps its first 2,000
+characters, and the result is capped at 48,000 characters. It still contains hidden
+elements, link and form targets, and script sources, which is what lets Jev spot
+hidden scam text, wallet-draining scripts and forms that send data elsewhere. The
+cloud page has no local cookies or sessions, so its HTML holds nothing of yours. If
+Jev rejects the request (for example, too long), the check repeats without the HTML.
+The ChatGPT reviewer never receives the HTML. If Jev finds phishing or scam signs on the page above
 the applicable threshold, the review blocks the page, even when the cloud model
 would allow it or fails to finish. No local cookies, login sessions, form values, request bodies,
 or ChatGPT tokens are sent to the website or Cloudflare. Queries, URL credentials,

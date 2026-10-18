@@ -298,3 +298,16 @@ test("Click Here runs a deep scan of the tab and reports the verdict", async () 
   assert.equal(data.reason, "Fake wallet support page");
   assert.equal(new URL(w.tab.url).pathname, "/warning.html");
 });
+
+test("an unrecognized money site waits for the cloud and shows no prompt once it is approved", async () => {
+  const w = worker([
+    { ...UNSURE, score: 92, jev_confidence: 0.84, review: { token: "money-job", status: "pending" } },
+    { status: "allow", reason: "Reviewed remotely", evidence: [] },
+  ]);
+  const outcome = await navigate(w);
+  assert.equal(outcome.action, "proceed");
+  assert.equal(w.storage["result:1"].unsure, false);
+  await w.listeners.updated(1, { status: "complete" }, { url: "https://ordinary.example/" });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(w.injected.length, 0);
+});

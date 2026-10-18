@@ -279,7 +279,8 @@ class ChatGPTPlanClient:
             "reason": {"type": "string"}, "evidence": {"type": "array", "items": {"type": "string"}},
         }, "required": ["action", "url", "x", "y", "verdict", "reason", "evidence"]}
         screenshot = observation.get("screenshot")
-        state = {key: value for key, value in observation.items() if key != "screenshot"}
+        # The raw HTML is for Jev's page check only; the model sees text and a screenshot.
+        state = {key: value for key, value in observation.items() if key not in {"screenshot", "html"}}
         content = [{"type": "input_text", "text": json.dumps({"page": state, "prior_actions": history})}]
         if screenshot:
             content.append({"type": "input_image", "image_url": screenshot, "detail": "high"})

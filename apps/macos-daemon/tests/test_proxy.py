@@ -38,7 +38,7 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.directory.cleanup)
         self.sites = ApprovedSites(Path(self.directory.name) / "approved.sqlite3")
         self.jev = Mock()
-        self.jev.assess.return_value = (0.95, 0.0)
+        self.jev.assess.return_value = (0.95, 0.0, 1.0)
         self.emit = Mock()
         self.addon = InspectionProxy(Inspector(self.sites, self.jev, emit=self.emit))
         self.addCleanup(self.addon.done)
@@ -105,7 +105,7 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(flow.response.status_code, 303)
 
     async def test_low_metadata_score_still_requires_remote_page_review(self):
-        self.jev.assess.return_value = (0.1, 0.0)
+        self.jev.assess.return_value = (0.1, 0.0, 1.0)
         flow = make_flow()
         await self.addon.requestheaders(flow)
         self.assertEqual(flow.response.status_code, 303)
@@ -131,7 +131,7 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
             return {"verdict": "allow", "reason": "Fixture page reviewed", "evidence": ["Rendered fixture"]}
         reviewer.review = AsyncMock(side_effect=review)
         self.addon.reviews = ReviewManager(reviewer)
-        self.jev.assess.return_value = (0.5, 0.0)
+        self.jev.assess.return_value = (0.5, 0.0, 1.0)
         url = "https://uncertain.invalid/article"
         flow = make_flow(url)
         await self.addon.requestheaders(flow)
@@ -158,7 +158,7 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
     async def test_unreviewed_subresources_and_forms_cannot_escape(self):
         reviewer = Mock(review=AsyncMock())
         self.addon.reviews = ReviewManager(reviewer)
-        self.jev.assess.return_value = (0.5, 0.0)
+        self.jev.assess.return_value = (0.5, 0.0, 1.0)
         resource = make_flow(headers={"Sec-Fetch-Dest": "script"})
         await self.addon.requestheaders(resource)
         self.assertEqual(resource.response.status_code, 403)

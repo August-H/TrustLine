@@ -209,6 +209,8 @@ async function analyzeUrl(url, mode, { waitForReview = true } = {}) {
       raw.reasons = [...(raw.reasons ?? []),
         `The cloud check couldn't finish, so this verdict is based on the web address only. ${raw.review.reason}`];
     } else if (raw.review) {
+      // A finished cloud verdict settles it; no "may not be safe" prompt afterwards.
+      if (["allow", "block"].includes(raw.review.status)) raw.unsure = false;
       raw.verdict = { allow: "safe", block: "dangerous" }[raw.review.status] ?? "suspicious";
       raw.reasons = [raw.review.reason, ...(raw.review.evidence ?? [])];
       raw.score = reviewedScore(raw.score, raw.review);

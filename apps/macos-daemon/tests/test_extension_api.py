@@ -19,7 +19,7 @@ from trustline.reviews import ReviewManager
 
 def fixture(directory, probability=0.27, verdict="allow"):
     database = Path(directory) / "approved.sqlite3"
-    jev = Mock(assess=Mock(return_value=(probability, 0.0)))
+    jev = Mock(assess=Mock(return_value=(probability, 0.0, 1.0)))
     reviewer = Mock(review=AsyncMock(return_value={
         "verdict": verdict, "reason": "Remote browser evidence", "evidence": ["Rendered page checked"]}))
     manager = ReviewManager(reviewer, approvals=ReviewedPages(database))
@@ -66,7 +66,7 @@ class ExtensionAPITests(unittest.IsolatedAsyncioTestCase):
         self.reviewer.review.assert_not_awaited()
 
     async def test_jev_status_survives_a_cloud_verdict(self):
-        self.jev.assess.return_value = (0.95, 0.0)
+        self.jev.assess.return_value = (0.95, 0.0, 1.0)
         result = await self.api.analyze("https://ordinary.example/", "quick")
         self.assertEqual(result["jev_status"], "suspicious")
         self.assertEqual(result["verdict"], "dangerous")
@@ -157,7 +157,7 @@ class ExtensionAPITests(unittest.IsolatedAsyncioTestCase):
 
     def low_score(self, probability=0.5):
         # 50: below the passing score, so a navigation check goes to the cloud.
-        self.jev.assess.return_value = (probability, 0.0)
+        self.jev.assess.return_value = (probability, 0.0, 1.0)
         self.proxy.inspector.cache.clear()
 
     async def test_navigation_check_starts_one_cloud_review_and_reuses_it(self):
@@ -247,6 +247,52 @@ class ExtensionAPITests(unittest.IsolatedAsyncioTestCase):
             await self.finish_review(result)
         self.assertEqual(self.reviewer.review.await_count, 3)
 
+    def money_site(self, probability, recognized):
+        self.jev.assess.return_value = (probability, 0.97, recognized)
+        self.proxy.inspector.cache.clear()
+
+    async def test_an_unrecognized_money_site_is_cloud_checked_despite_a_confident_score(self):
+        # zingoptions.com: address score 92, a trading site Jev does not recognize.
+        self.money_site(0.08, 0.1)
+        result = await self.api.analyze("https://zingoptions.com/", "navigate")
+        self.assertEqual(result["score"], 92)
+        self.assertEqual(result["review"]["status"], "pending")
+        self.assertIn("doesn't recognize", " ".join(result["reasons"]))
+        self.reviewer.review.return_value["verdict"] = "block"
+        result["review"] = await self.finish_review(result)
+        self.api.apply_review(result, keep_url_verdict=True)
+        self.assertEqual((result["verdict"], result["score"]), ("dangerous", 39))
+
+    async def test_a_cloud_approved_unrecognized_money_site_shows_no_prompt(self):
+        self.money_site(0.03, 0.1)
+        await self.finish_review(await self.api.analyze("https://smallbroker.example/", "navigate"))
+        again = await self.api.analyze("https://smallbroker.example/", "navigate")
+        self.assertEqual((again["verdict"], again["review"]["status"]), ("safe", "allow"))
+        self.assertNotIn("unsure", again)
+
+    async def test_a_recognized_money_site_follows_the_confidence_rules(self):
+        self.money_site(0.03, 0.95)
+        result = await self.api.analyze("https://bigbank.example/", "navigate")
+        self.assertEqual((result["verdict"], result["recognized_probability"]), ("safe", 0.95))
+        self.assertNotIn("review", result)
+        self.assertNotIn("unsure", result)
+        self.reviewer.review.assert_not_awaited()
+
+    async def test_a_confidently_fake_money_site_goes_straight_to_the_warning(self):
+        self.money_site(0.97, 0.05)
+        result = await self.api.analyze("https://fake-broker.example/", "navigate")
+        self.assertEqual(result["verdict"], "dangerous")
+        self.assertNotIn("review", result)
+        self.reviewer.review.assert_not_awaited()
+
+    async def test_an_unrecognized_money_site_without_cloud_review_opens_with_the_prompt(self):
+        self.proxy.reviews.reviewer = None
+        self.money_site(0.03, 0.1)
+        result = await self.api.analyze("https://smallbroker.example/", "navigate")
+        self.assertEqual(result["verdict"], "safe")
+        self.assertTrue(result["unsure"])
+        self.assertNotIn("review", result)
+
     async def test_unsure_is_only_reported_for_navigation(self):
         for mode in ["quick", "deep"]:
             result = await self.api.analyze("https://ordinary.example/", mode)
@@ -317,7 +363,7 @@ class ExtensionHTTPTests(AsyncHTTPTestCase):
         self.assertEqual(self.fetch("/v1/reviews/unknown-token").code, 404)
 
     def test_navigate_mode_is_accepted_over_http(self):
-        self.jev.assess.return_value = (0.5, 0.0)
+        self.jev.assess.return_value = (0.5, 0.0, 1.0)
         response = self.post({"url": "https://ordinary.example/", "mode": "navigate"})
         self.assertEqual(response.code, 200)
         self.assertIn(json.loads(response.body)["review"]["status"], {"pending", "allow"})

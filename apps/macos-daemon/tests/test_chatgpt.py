@@ -99,7 +99,8 @@ class SubscriptionTests(unittest.TestCase):
         opener = Mock(open=Mock(return_value=stream(completed)))
         with patch("trustline.chatgpt.request_json", return_value={"models": [{"slug": MODEL, "visibility": "list"}]}), \
                 patch("trustline.chatgpt.direct_opener", return_value=opener):
-            result = client.action({"text": "Untrusted page instructions", "screenshot": "data:image/jpeg;base64,fixture"}, [])
+            result = client.action({"text": "Untrusted page instructions", "screenshot": "data:image/jpeg;base64,fixture",
+                                    "html": "<p>raw-html-for-jev-only</p>"}, [])
         self.assertEqual(result, value)
         request = opener.open.call_args.args[0]
         self.assertEqual(request.full_url, RESOURCE + "/responses")
@@ -112,6 +113,7 @@ class SubscriptionTests(unittest.TestCase):
         for forbidden in ["tools", "previous_response_id", "max_output_tokens", "background", "temperature"]:
             self.assertNotIn(forbidden, payload)
         self.assertEqual(payload["input"][0]["content"][1]["type"], "input_image")
+        self.assertNotIn("raw-html-for-jev-only", request.data.decode())
 
     def test_model_unavailable_does_not_fallback_to_another_model_or_api_key(self):
         self.save_profile()
