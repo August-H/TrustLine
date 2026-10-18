@@ -147,13 +147,22 @@ It works only in the Chrome session using this proxy and trusting its CA.
 ## Review behavior and privacy
 
 For the URL check, Jev receives only origin, hostname, HTTP method, resource type,
-HTTPS flag, and punycode flag. It receives no path, query, headers, cookies, or
-page content. Each request asks whether the metadata meets the stated
-suspicious-origin criteria, whether the hostname misspells a well-known name, and
+HTTPS flag, punycode flag, the top-level domain, and whether that top-level domain
+is in `SKEPTICAL_TLDS` (`inspection.py`: cheap endings common on scam sites, such
+as .xyz, .cc and .top). It receives no path, query, headers, cookies, or page
+content. On those endings the question tells Jev to be sceptical: any further cue,
+such as a brand, crypto, reward, login or support word, a service prefix like
+`app-`, or a random-looking name, is enough to flag it; the ending alone is not.
+Each request asks whether the metadata meets the stated suspicious-origin criteria, whether the hostname misspells a well-known name, and
 whether the site is about crypto, finance, or shopping. For the misspelling check,
 code supplies candidate readings of the hostname with common substitutions undone
 (`visu4lstudio` reads as `visualstudio`). The higher of the first two
-probabilities is the result. It is not a separate confidence or severity score.
+probabilities is the result. It is not a separate severity score. These are Noul
+(yes/no) questions, which return no `confidence` field, so the extension API reports
+`jev_confidence = |2p − 1|` from that result, TypeSafe's suggested conversion for a
+Noul: 0 when yes and no are equally likely, 1 when Jev is certain. The extension's
+loading screen skips the cloud check at 0.85 or more (`NAVIGATION_CONFIDENCE` in
+`api.py`).
 
 For remote review, Cloudflare receives the destination origin and path. OpenAI
 receives the remote browser's rendered text, page/link/form metadata, screenshots,
@@ -257,6 +266,44 @@ The existing `.env` and protected ChatGPT session are used at login. Generic
 errors go to `daemon.error.log`. Flow dumps, URL logs, and TLS secret logs are
 disabled. Each newly blocked model verdict prints `suspicious website`.
 
+## Restart after changes
+
+Restart the daemon after pulling new code or editing `.env`; it only reads both at
+startup. Then reload TrustLine in `chrome://extensions` if extension files changed.
+
+Check which way it is running:
+
+```sh
+launchctl print "gui/$(id -u)/com.trustline.daemon" >/dev/null 2>&1 \
+  && echo "LaunchAgent" || pgrep -fl "run.py.*serve"
+```
+
+**LaunchAgent** (installed with `scripts/install_macos.py`): restart it in place.
+
+```sh
+launchctl kickstart -k "gui/$(id -u)/com.trustline.daemon"
+```
+
+**Foreground** (started with `run.py serve` in a terminal): press Ctrl+C in that
+terminal, then start it again from `apps/macos-daemon`:
+
+```sh
+.venv/bin/python run.py serve
+```
+
+If no terminal window is running it but `pgrep` still lists a process, stop it with
+`pkill -f "run.py.*serve"` first. Run only one copy: a second one exits with
+`TrustLine is already running in this state directory`.
+
+Confirm it is back:
+
+```sh
+curl -s http://127.0.0.1:8765/health
+```
+
+It should print `"status": "ok"` and, when Cloudflare and ChatGPT are set up,
+`"cloud_review_configured": true`.
+
 ## Verify
 
 From the repository root:
@@ -340,5 +387,7 @@ for the loaded page when that is lower, and a blocked page never scores above 39
 the top of the Dangerous zone. Successful reviews still save
 exact-page approvals to SQLite for 24 hours; they do not promote a domain into the
 permanent verified list. Explicit Deep scans repeat completed reviews and reuse
-reviews already pending in the proxy. Known verified domains always bypass both
-models, including when Deep scan is requested.
+reviews already pending in the proxy. The extension's loading screen uses
+`navigate` mode instead, which also reuses completed reviews and 24-hour page
+approvals, so opening a page does not repeat a cloud check. Known verified domains
+always bypass both models, including when Deep scan is requested.

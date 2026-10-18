@@ -10,7 +10,7 @@ from tornado.testing import AsyncHTTPTestCase
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from trustline.api import ExtensionAPI, application, reviewed_score
+from trustline.api import ExtensionAPI, application, jev_confidence, reviewed_score
 from trustline.approvals import ReviewedPages
 from trustline.inspection import ApprovedSites, Inspector, JevError
 from trustline.proxy import InspectionProxy
@@ -155,6 +155,126 @@ class ExtensionAPITests(unittest.IsolatedAsyncioTestCase):
         result = await self.api.analyze("https://ordinary.example/different", "deep")
         self.assertEqual(result["review"]["status"], "inconclusive")
 
+    def low_score(self, probability=0.5):
+        # 50: below the passing score, so a navigation check goes to the cloud.
+        self.jev.assess.return_value = (probability, 0.0)
+        self.proxy.inspector.cache.clear()
+
+    async def test_navigation_check_starts_one_cloud_review_and_reuses_it(self):
+        self.low_score()
+        url = "https://ordinary.example/article#section"
+        result = await self.api.analyze(url, "navigate")
+        self.assertEqual(result["review"]["status"], "pending")
+        await self.finish_review(result)
+        self.reviewer.review.assert_awaited_once_with("https://ordinary.example/article")
+        again = await self.api.analyze(url, "navigate")
+        self.assertEqual(again["review"]["status"], "allow")
+        self.assertEqual(again["verdict"], "safe")
+        self.assertEqual(self.reviewer.review.await_count, 1)
+
+    async def test_navigation_check_joins_a_pending_review_without_restarting_it(self):
+        self.low_score()
+        url = "https://ordinary.example/"
+        first = self.proxy.reviews.start(url)
+        result = await self.api.analyze(url, "navigate")
+        self.assertEqual(result["review"]["token"], first.token)
+        await self.finish_review(result)
+        self.assertEqual(self.reviewer.review.await_count, 1)
+
+    async def test_navigation_check_skips_the_cloud_for_a_page_approved_earlier(self):
+        url = "https://ordinary.example/article"
+        ReviewedPages(self.proxy.inspector.sites.path).approve(url)
+        for probability in [0.5, 0.27]:  # cloud band and unsure band
+            self.low_score(probability)
+            result = await self.api.analyze(url, "navigate")
+            self.assertEqual(result["review"]["status"], "allow")
+            self.assertEqual(result["verdict"], "safe")
+            self.assertNotIn("unsure", result)
+        self.reviewer.review.assert_not_awaited()
+
+    async def test_navigation_block_caps_score_and_inconclusive_keeps_the_address_verdict(self):
+        self.low_score()
+        self.reviewer.review.return_value["verdict"] = "block"
+        result = await self.api.analyze("https://ordinary.example/", "navigate")
+        result["review"] = await self.finish_review(result)
+        self.api.apply_review(result, keep_url_verdict=True)
+        self.assertEqual((result["verdict"], result["score"]), ("dangerous", 39))
+        self.reviewer.review.return_value["verdict"] = "inconclusive"
+        result = await self.api.analyze("https://ordinary.example/other", "navigate")
+        result["review"] = await self.finish_review(result)
+        self.api.apply_review(result, keep_url_verdict=True)
+        self.assertEqual((result["verdict"], result["score"]), ("suspicious", 50))
+        self.assertEqual(result["jev_status"], "uncertain")
+
+    def test_jev_confidence_is_the_noul_distance_from_even(self):
+        for probability, expected in [(0.5, 0.0), (0.07, 0.86), (0.95, 0.9), (0.0, 1.0), (None, None)]:
+            with self.subTest(probability=probability):
+                self.assertEqual(jev_confidence(probability), expected)
+
+    async def test_navigation_trusts_a_confident_pass_outright(self):
+        for probability, score in [(0.07, 93), (0.05, 95)]:
+            self.low_score(probability)
+            result = await self.api.analyze("https://ordinary.example/", "navigate")
+            self.assertEqual((result["score"], result["verdict"]), (score, "safe"))
+            self.assertGreaterEqual(result["jev_confidence"], 0.85)
+            self.assertNotIn("review", result)
+            self.assertNotIn("unsure", result)
+        self.reviewer.review.assert_not_awaited()
+
+    async def test_navigation_blocks_a_confident_flag_without_a_cloud_check(self):
+        self.low_score(0.95)
+        result = await self.api.analyze("https://ordinary.example/", "navigate")
+        self.assertEqual((result["score"], result["verdict"], result["jev_confidence"]), (5, "dangerous", 0.9))
+        self.assertNotIn("review", result)
+        self.reviewer.review.assert_not_awaited()
+
+    async def test_navigation_passes_but_flags_a_low_confidence_pass(self):
+        # A passing score is not enough: 90 means p = 0.1, only 80% confident.
+        for index, (probability, score) in enumerate([(0.3, 70), (0.16, 84), (0.1, 90)]):
+            self.low_score(probability)
+            result = await self.api.analyze(f"https://ordinary.example/{index}", "navigate")
+            self.assertEqual((result["score"], result["verdict"]), (score, "safe"))
+            self.assertLess(result["jev_confidence"], 0.85)
+            self.assertTrue(result["unsure"])
+            self.assertIn("confident", result["reasons"][-1])
+            self.assertNotIn("review", result)
+        self.reviewer.review.assert_not_awaited()
+
+    async def test_navigation_sends_an_unsure_failing_score_to_the_cloud(self):
+        for index, probability in enumerate([0.31, 0.5, 0.9]):  # 69, 50 and 10, all under 85% confident
+            self.low_score(probability)
+            result = await self.api.analyze(f"https://ordinary.example/{index}", "navigate")
+            await self.finish_review(result)
+        self.assertEqual(self.reviewer.review.await_count, 3)
+
+    async def test_unsure_is_only_reported_for_navigation(self):
+        for mode in ["quick", "deep"]:
+            result = await self.api.analyze("https://ordinary.example/", mode)
+            self.assertNotIn("unsure", result)
+            if mode == "deep":
+                await self.finish_review(result)
+
+    async def test_navigation_with_a_high_score_still_honors_an_earlier_block(self):
+        url = "https://ordinary.example/vote"
+        self.reviewer.review.return_value["verdict"] = "block"
+        await self.finish_review(await self.api.analyze(url, "deep"))
+        for probability in [0.07, 0.2]:  # confident and unsure bands
+            self.low_score(probability)
+            result = await self.api.analyze(url, "navigate")
+            self.assertEqual((result["verdict"], result["score"]), ("dangerous", 39))
+            self.assertNotIn("unsure", result)
+        self.assertEqual(self.reviewer.review.await_count, 1)
+
+    async def test_navigation_without_cloud_configuration_is_an_address_check(self):
+        self.proxy.reviews.reviewer = None
+        self.low_score()
+        result = await self.api.analyze("https://ordinary.example/", "navigate")
+        self.assertNotIn("review", result)
+        self.assertEqual(result["score"], 50)
+        verified = await self.api.analyze("https://linkedin.com/", "navigate")
+        self.assertNotIn("review", verified)
+        self.assertNotIn("unsure", verified)
+        self.assertEqual(verified["score"], 100)
 
 class ExtensionHTTPTests(AsyncHTTPTestCase):
     def get_app(self):
@@ -195,6 +315,12 @@ class ExtensionHTTPTests(AsyncHTTPTestCase):
                      {"url": "https://blocked.example.com/"}, {"url": "https://example.com", "mode": []}]:
             self.assertEqual(self.post(body).code, 400)
         self.assertEqual(self.fetch("/v1/reviews/unknown-token").code, 404)
+
+    def test_navigate_mode_is_accepted_over_http(self):
+        self.jev.assess.return_value = (0.5, 0.0)
+        response = self.post({"url": "https://ordinary.example/", "mode": "navigate"})
+        self.assertEqual(response.code, 200)
+        self.assertIn(json.loads(response.body)["review"]["status"], {"pending", "allow"})
 
     def test_deep_scan_http_poll_returns_actual_remote_result(self):
         response = self.post({"url": "https://ordinary.example/", "mode": "deep"})

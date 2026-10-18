@@ -19,15 +19,42 @@ The extension can request scores and cloud reviews in an ordinary Chrome window.
 
 With **Auto-scan websites** on, a `declarativeNetRequest` session rule sends every
 top-level http(s) navigation to `scanning.html` before any request reaches the site.
-The page asks the daemon for a quick score, shows for at least a second, then:
+The page asks the daemon for a `navigate` scan: the Jev address score plus the same
+Cloudflare and ChatGPT page check as **Deep scan**. Unlike the Deep scan button it
+joins a cloud check already running for that page, reuses a finished one, and skips
+the cloud for pages approved in the last 24 hours. Verified domains skip both models.
+Jev's confidence decides whether the cloud is needed (constants in the daemon's
+`api.py`). Jev answers TrustLine's address questions as yes/no probabilities, which
+have no `confidence` field, so the daemon uses TypeSafe's Noul conversion,
+`jev_confidence = |2p − 1|`: 0 when Jev can't tell, 1 when it is certain either way.
+
+| Jev confidence and trust score | What happens |
+| --- | --- |
+| 85%+ confident the address is fine (`NAVIGATION_CONFIDENCE`) | Opens with no cloud check. |
+| 85%+ confident it is fake | Warning page, no cloud check. |
+| Under 85% confident, trust score 70+ (`PASSING_SCORE`) | Opens with no cloud check, then a prompt appears in the page's top-right corner, under the toolbar icon: "This website may not be safe. **Click Here** to run a deep scan." |
+| Under 85% confident, trust score under 70, or no score | Cloud check on the loading screen. |
+
+A cloud block from the last two minutes still applies at any score. The prompt
+(`nudge.js`) is injected with `chrome.scripting` into a closed shadow root, so the
+page's styles can't change it and its scripts can't click it. **Click Here** runs a
+Deep scan of that tab; a block sends the tab to the warning page. Each prompt shows
+once, after the page finishes loading.
+
+The screen stays hidden (a blank tab) while the address is scored. When no cloud
+check is needed, the tab goes straight on and the screen never appears. When one
+is, the screen appears, usually for several seconds to a minute, then:
 
 - **Safe:** the domain is cleared for the rest of the browser session and the tab
   continues to the destination.
 - **Suspicious or dangerous:** the tab goes to `warning.html` (when blocking is on).
+- **Cloud check inconclusive, timed out or not configured:** the address check
+  decides, as it did before cloud checks were added, and the reasons say so.
 - **Daemon offline:** the page loads anyway, and the domain is checked again after
   60 seconds. Without a daemon there is no verdict to act on.
 
-This needs `declarativeNetRequestWithHostAccess` and access to all http(s) sites.
+This needs `declarativeNetRequestWithHostAccess`, `scripting` (for the prompt) and
+access to all http(s) sites.
 Domains you allow from the warning page, `localhost` and `127.0.0.1` are never held.
 
 Preview the screen without the daemon: open
@@ -54,7 +81,8 @@ Preview the screen without the daemon: open
 - Missing Jev results display `--`. An unavailable cloud review reports a failure or
   inconclusive result. The installed extension never generates mock scores.
 
-Auto-scan runs quick database/Jev checks on navigation. Turning it off controls
+Auto-scan runs the loading screen's cloud page check before navigation and a quick
+database/Jev check on pages it lets through. Turning it off controls
 extension scans and warning redirects, not the separate proxy's enforcement.
 
 ## Loopback API
@@ -68,7 +96,13 @@ Base URL: `http://127.0.0.1:8765`. Set `serve --api-port PORT` and update
   `jev_status`, `reasons` and `target_url`. `jev_status` is Jev's own result
   (`suspicious`, `uncertain`, `not_flagged`, `unscored` or `skipped`) and is kept
   even when a cloud review changes `verdict`. Use `"mode": "deep"` to also receive a `review` containing a
-  job `token`, `status`, `reason` and `evidence`.
+  job `token`, `status`, `reason` and `evidence`; it always runs a fresh cloud check.
+  `"mode": "navigate"` returns the same `review` but reuses pending, finished or
+  24-hour-approved checks, omits `review` when cloud checks are not configured, and
+  leaves the address verdict in place when the check is inconclusive. It skips the
+  cloud when `jev_confidence` is 0.85 or more, and for passing scores (70+) under
+  that it returns `"verdict": "safe"` with `"unsure": true`. Every non-verified
+  response includes `jev_confidence`.
 - `GET /v1/reviews/TOKEN`: poll `pending`, `allow`, `block`, or `inconclusive`.
 
 The API binds only to loopback, rejects website origins and non-loopback Host

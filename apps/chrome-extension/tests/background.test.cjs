@@ -9,6 +9,8 @@ function worker(responses) {
   const storage = {};
   const tab = { id: 1, url: "https://ordinary.example/" };
   const noop = () => {};
+  const listeners = {};
+  const injected = [];
   const context = vm.createContext({
     URL, AbortController, console,
     setTimeout: (fn, delay) => { if (delay <= 1000) queueMicrotask(fn); return 1; },
@@ -27,7 +29,7 @@ function worker(responses) {
     chrome: {
       runtime: { onInstalled: { addListener: noop }, onStartup: { addListener: noop },
         onMessage: { addListener: noop }, getURL: (file) => `chrome-extension://${"a".repeat(32)}/${file}` },
-      tabs: { onUpdated: { addListener: noop }, onRemoved: { addListener: noop },
+      tabs: { onUpdated: { addListener: (fn) => { listeners.updated = fn; } }, onRemoved: { addListener: noop },
         get: async () => tab, update: async (_, patch) => Object.assign(tab, patch) },
       storage: {
         session: { get: async () => storage, set: async (data) => Object.assign(storage, data),
@@ -35,10 +37,14 @@ function worker(responses) {
         local: { get: async () => ({ settings: { autoScan: true, blockDangerous: true } }) },
       },
       action: { setIcon: noop, setBadgeText: noop, setBadgeBackgroundColor: noop, setTitle: noop },
+      scripting: { executeScript: async (details) => { injected.push(details); return []; } },
     },
   });
+  context.importScripts = (...files) => {
+    for (const file of files) vm.runInContext(fs.readFileSync(path.join(__dirname, "..", file), "utf8"), context);
+  };
   vm.runInContext(fs.readFileSync(path.join(__dirname, "../background.js"), "utf8"), context);
-  return { calls, context, storage, tab,
+  return { calls, context, storage, tab, listeners, injected,
     analyze: (mode) => vm.runInContext(`analyzeUrl('https://ordinary.example/', '${mode}')`, context) };
 }
 
@@ -167,4 +173,128 @@ test("a successful Deep scan releases a previously inconclusive proxy checking t
   w.tab.url = "https://blocked.example.com/_trustline/check/existing-token";
   await vm.runInContext(`scanTab(1, '${w.tab.url}', 'deep')`, w.context);
   assert.equal(w.tab.url, "https://original.example/article");
+});
+
+function navigate(w, url = "https://ordinary.example/") {
+  return vm.runInContext(`handlers.scanNavigation({ url: '${url}' }, { tab: { id: 1 } })`, w.context);
+}
+
+test("the loading screen asks for a cloud page check and waits for it", async () => {
+  const w = worker([
+    { verdict: "safe", score: 93, jev_probability: 0.07, jev_status: "not_flagged", score_source: "jev",
+      review: { token: "nav-job", status: "pending" } },
+    { status: "pending", reason: "Reviewing" },
+    { status: "block", reason: "Impersonates a crypto explorer", evidence: ["Reward-voting lure"] },
+  ]);
+  const outcome = await navigate(w);
+  assert.equal(JSON.parse(w.calls[0].options.body).mode, "navigate");
+  assert.equal(w.calls[2].url, "http://127.0.0.1:8765/v1/reviews/nav-job");
+  assert.equal(outcome.action, "warn");
+  const warning = new URL(outcome.url);
+  assert.equal(warning.searchParams.get("verdict"), "dangerous");
+  assert.equal(warning.searchParams.get("score"), "39");
+  assert.equal(w.storage["result:1"].review.status, "block");
+});
+
+test("a cloud approval on the loading screen lets the page open", async () => {
+  const w = worker([{ verdict: "suspicious", score: 55, jev_status: "uncertain", score_source: "jev",
+    review: { status: "allow", reason: "Reviewed remotely", evidence: [], page_probability: 0.2 } }]);
+  const outcome = await navigate(w);
+  assert.equal(outcome.action, "proceed");
+  assert.equal(w.storage["result:1"].score, 55);
+});
+
+test("an inconclusive cloud check on the loading screen falls back to the address check", async () => {
+  const w = worker([{ verdict: "safe", score: 90, jev_status: "not_flagged", score_source: "jev",
+    reasons: ["Address looks ordinary"],
+    review: { status: "inconclusive", reason: "The page could not be inspected completely.", evidence: [] } }]);
+  const outcome = await navigate(w);
+  assert.equal(outcome.action, "proceed");
+  const result = w.storage["result:1"];
+  assert.equal(result.verdict, "safe");
+  assert.equal(result.score, 90);
+  assert.equal(result.reasons[0], "Address looks ordinary");
+  assert.match(result.reasons[1], /based on the web address only/);
+});
+
+test("a lost cloud job on the loading screen keeps the address verdict instead of failing", async () => {
+  const w = worker([
+    { verdict: "dangerous", score: 8, jev_status: "suspicious", score_source: "jev",
+      review: { token: "gone", status: "pending" } },
+    new Error("This cloud review is unavailable or expired"),
+  ]);
+  const outcome = await navigate(w);
+  assert.equal(outcome.action, "warn");
+  assert.equal(new URL(outcome.url).searchParams.get("score"), "8");
+  assert.equal(w.storage["result:1"].source, "daemon");
+});
+
+test("the hidden first check returns at once when a cloud check is still running", async () => {
+  const w = worker([{ verdict: "suspicious", score: 60, jev_status: "uncertain", score_source: "jev",
+    review: { token: "nav-job", status: "pending" } }]);
+  const outcome = await vm.runInContext(
+    "handlers.scanNavigation({ url: 'https://ordinary.example/', waitForReview: false }, { tab: { id: 1 } })", w.context);
+  assert.deepEqual({ ...outcome }, { action: "review" });
+  assert.equal(w.calls.length, 1);
+  assert.equal(w.storage["result:1"], undefined);
+});
+
+test("a high-scoring address goes straight through on the hidden first check", async () => {
+  const w = worker([{ verdict: "safe", score: 93, jev_status: "not_flagged", score_source: "jev" }]);
+  const outcome = await vm.runInContext(
+    "handlers.scanNavigation({ url: 'https://ordinary.example/', waitForReview: false }, { tab: { id: 1 } })", w.context);
+  assert.equal(outcome.action, "proceed");
+  assert.equal(outcome.url, "https://ordinary.example/");
+  assert.equal(w.storage["result:1"].score, 93);
+  assert.deepEqual([...w.storage.cleared], ["ordinary.example"]);
+});
+
+const UNSURE = { verdict: "safe", score: 78, jev_status: "uncertain", jev_confidence: 0.56, score_source: "jev", unsure: true,
+  reasons: ["TrustLine estimates a 22.0% chance this web address is fake or misleading."] };
+
+test("an unsure pass opens the page and shows the deep scan prompt once it loads", async () => {
+  const w = worker([{ ...UNSURE }]);
+  const outcome = await vm.runInContext(
+    "handlers.scanNavigation({ url: 'https://ordinary.example/', waitForReview: false }, { tab: { id: 1 } })", w.context);
+  assert.equal(outcome.action, "proceed");
+  assert.equal(w.storage["result:1"].unsure, true);
+  assert.equal(w.storage["result:1"].jevConfidence, 0.56);
+  await w.listeners.updated(1, { status: "complete" }, { url: "https://www.ordinary.example/home" });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(w.injected.length, 1);
+  assert.equal(w.injected[0].target.tabId, 1);
+  assert.equal(w.injected[0].func.name, "trustLineNudge");
+  // Shown once: a second load of the tab does not repeat it.
+  await w.listeners.updated(1, { status: "complete" }, { url: "https://ordinary.example/next" });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(w.injected.length, 1);
+});
+
+test("the prompt is dropped if the tab ends up on a different site", async () => {
+  const w = worker([{ ...UNSURE }]);
+  await vm.runInContext("handlers.scanNavigation({ url: 'https://ordinary.example/' }, { tab: { id: 1 } })", w.context);
+  await w.listeners.updated(1, { status: "complete" }, { url: "https://elsewhere.example/" });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(w.injected.length, 0);
+});
+
+test("a confident pass shows no prompt", async () => {
+  const w = worker([{ verdict: "safe", score: 93, jev_status: "not_flagged", score_source: "jev" }]);
+  await vm.runInContext("handlers.scanNavigation({ url: 'https://ordinary.example/' }, { tab: { id: 1 } })", w.context);
+  await w.listeners.updated(1, { status: "complete" }, { url: "https://ordinary.example/" });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(w.injected.length, 0);
+});
+
+test("Click Here runs a deep scan of the tab and reports the verdict", async () => {
+  const w = worker([
+    { ...UNSURE, review: { token: "job", status: "pending" } },
+    { status: "block", reason: "Fake wallet support page", evidence: [] },
+  ]);
+  const data = await vm.runInContext(
+    "handlers.nudgeDeepScan({}, { tab: { id: 1, url: 'https://ordinary.example/' } })", w.context);
+  assert.equal(JSON.parse(w.calls[0].options.body).mode, "deep");
+  assert.equal(data.verdict, "dangerous");
+  assert.equal(data.reason, "Fake wallet support page");
+  assert.equal(new URL(w.tab.url).pathname, "/warning.html");
 });

@@ -127,6 +127,15 @@ function render() {
     const [pre, post] = VERDICT_COPY[result.verdict];
     el.statusIcon.innerHTML = ICONS[result.verdict];
     setVerdictText(pre, result.domain, post);
+<<<<<<< Updated upstream
+=======
+    const sourceLabel = result.verified ? "Verified database" : typeof result.review?.page_probability === "number" ? "Jev URL and page score" :
+      { daemon: "Jev URL score", unavailable: "Score unavailable", demo: "Demo preview" }[result.source] ?? "";
+    const modeLabel = result.review ? "Cloudflare deep scan" : result.source === "demo" ? "" : "Quick scan";
+    const confidence = typeof result.jevConfidence === "number" ? `Jev ${Math.round(result.jevConfidence * 100)}% confident` : "";
+    const parts = [modeLabel, sourceLabel, confidence, result.scannedAt ? timeAgo(result.scannedAt) : ""].filter(Boolean);
+    el.verdictMeta.textContent = parts.join(" · ");
+>>>>>>> Stashed changes
   } else if (view.kind === "pending") {
     el.statusIcon.innerHTML = ICONS.pending;
     el.verdict.replaceChildren(document.createTextNode("Checking "), Object.assign(document.createElement("strong"), { textContent: state.tab.domain }), document.createTextNode("…"));
@@ -138,6 +147,16 @@ function render() {
   // Trust meter
   const score = view.kind === "result" ? view.result.score : null;
   el.scoreValue.textContent = score === null ? "--" : String(score);
+<<<<<<< Updated upstream
+=======
+  el.scoreHelper.textContent = view.kind === "result" && view.result.source === "demo" ? "Demo score for preview only" :
+    view.kind === "result" && view.result.verified ? "100: domain in the verified database" :
+    score === null ? "No score available" :
+    view.kind === "result" && view.result.review?.status === "block" ? "Deep scan blocked this page, so the score is at most 39" :
+    view.kind === "result" && typeof view.result.review?.page_probability === "number" ? "Lower of the Jev URL and page scores" :
+    view.kind === "result" && view.result.unsure ? "Passing, but Jev is under 85% confident: run a Deep scan to check the page" :
+    "Jev URL score: 100 × (1 − suspiciousness)";
+>>>>>>> Stashed changes
   el.fill.style.width = `${score ?? 0}%`;
   el.track.setAttribute("aria-valuenow", String(score ?? 0));
 

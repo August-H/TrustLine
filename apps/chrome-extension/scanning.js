@@ -1,7 +1,9 @@
 "use strict";
 
-// Shown before a navigation completes. background.js asks the daemon about the
-// destination, then this page either forwards to it or hands off to the warning.
+// Opened before a navigation completes. It stays invisible while background.js
+// gets the address score; a high-scoring address goes straight through. Only when
+// a cloud page check is needed does the screen appear and wait for it. Then it
+// either forwards to the destination or hands off to the warning.
 
 const MIN_DISPLAY_MS = 1000; // keeps instant answers from flashing the page
 const STEP_INTERVAL_MS = 350;
@@ -79,10 +81,11 @@ function setProgress(pct) {
 }
 
 // Creep towards 90% while waiting; the last stretch lands when the answer does.
+// A cloud page check can take a minute, so the bar moves slowly.
 let creepFrame = 0;
 function creep(startedAt) {
   const elapsed = performance.now() - startedAt;
-  setProgress(90 * (1 - Math.exp(-elapsed / 900)));
+  setProgress(90 * (1 - Math.exp(-elapsed / 15_000)));
   creepFrame = requestAnimationFrame(() => creep(startedAt));
 }
 
@@ -90,7 +93,8 @@ function setStep(index, state) {
   if (steps[index]) steps[index].dataset.state = state;
 }
 
-// Steps 1 and 2 tick over on a timer; step 3 finishes with the real result.
+// Steps 1 and 2 tick over on a timer; step 3 (the cloud page check) finishes
+// with the real result.
 function advanceSteps() {
   setTimeout(() => {
     setStep(0, "done");
@@ -131,34 +135,61 @@ function demoWarningUrl(result) {
   return page.href;
 }
 
-async function check() {
+function reveal() {
+  delete document.body.dataset.quiet;
+}
+
+async function check(waitForReview) {
   if (demo) {
     await sleep(1600);
     const result = DEMO_RESULTS[demo];
     return { verdict: result.verdict, action: result.verdict === "safe" ? "proceed" : "warn",
       url: result.verdict === "safe" ? parsed.href : demoWarningUrl(result) };
   }
-  const res = await chrome.runtime.sendMessage({ type: "scanNavigation", url: parsed.href });
+  const res = await chrome.runtime.sendMessage({ type: "scanNavigation", url: parsed.href, waitForReview });
   if (!res?.ok) throw new Error(res?.error ?? "No response from TrustLine");
   return res.data;
+}
+
+function fail(err) {
+  if (err) console.warn("[TrustLine]", err);
+  reveal();
+  showFailure();
 }
 
 async function run() {
   renderAddress();
   if (!parsed) {
-    showFailure();
+    fail();
     return;
   }
+
+  // Address check with the page hidden. Anything that needs no cloud check
+  // (a high score, a verified domain, a remembered result) leaves at once.
+  if (!demo) {
+    let first;
+    try {
+      first = await check(false);
+    } catch (err) {
+      fail(err);
+      return;
+    }
+    if (first.action !== "review") {
+      location.replace(first.url);
+      return;
+    }
+  }
+
+  reveal();
   const startedAt = performance.now();
   creep(startedAt);
   advanceSteps();
 
   let outcome;
   try {
-    outcome = await check();
+    outcome = await check(true);
   } catch (err) {
-    console.warn("[TrustLine]", err);
-    showFailure();
+    fail(err);
     return;
   }
 

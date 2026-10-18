@@ -10,6 +10,9 @@ body[data-status="scanning"] {
 
 body[data-status="scanning"] .band-icon[data-theme="scanning"] { display: block; }
 
+/* Hidden during the address check; shown only if a cloud check is needed. */
+body[data-quiet] { visibility: hidden; }
+
 /* A light sweep moving down the shield while the check runs. */
 .scan-sweep { animation: sweep 1.4s ease-in-out infinite alternate; }
 @keyframes sweep {

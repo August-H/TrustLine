@@ -3,7 +3,7 @@
 import asyncio
 import json
 import re
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from tornado.httpserver import HTTPServer
 from tornado.web import Application, RequestHandler
@@ -13,6 +13,23 @@ from .reviews import request_key
 
 # Top of the extension's Dangerous zone (scores under 40).
 BLOCKED_MAX_SCORE = 39
+MODES = {"quick", "deep", "navigate"}
+# Jev's URL questions are Noul (yes/no) judgments, which carry no `confidence`
+# field. TypeSafe's docs put a Noul on the Choice confidence scale as |2p - 1|:
+# 0 when yes and no are equally likely, 1 when Jev is certain either way.
+#
+# Before a page opens (navigate mode):
+# - confidence >= NAVIGATION_CONFIDENCE: no cloud check. A confident pass opens;
+#   a confident flag goes to the warning page.
+# - less confident, but the trust score passes (>= PASSING_SCORE): opens with no
+#   cloud check, marked `unsure` so the extension offers a Deep scan.
+# - less confident and failing: the loading screen runs the cloud check.
+NAVIGATION_CONFIDENCE = 0.85
+PASSING_SCORE = 70
+
+
+def jev_confidence(probability):
+    return None if probability is None else round(abs(2 * probability - 1), 4)
 
 
 class ExtensionAPI:
@@ -65,13 +82,23 @@ class ExtensionAPI:
         data = {"verdict": "safe" if verified else verdict, "score": score,
                 "verified": verified, "score_source": "verified_database" if verified else "jev",
                 "jev_probability": probability, "jev_status": result["status"],
+                "jev_confidence": None if verified else jev_confidence(probability),
                 "reasons": reasons, "target_url": target}
+        confidence = data["jev_confidence"]
+        confident = confidence is not None and confidence >= NAVIGATION_CONFIDENCE
+        passing = (score is not None and score >= PASSING_SCORE
+                   and result["status"] in {"not_flagged", "uncertain"})
         if mode == "deep" and not verified:
             row = self.proxy.reviews.start(target, force=not join_pending)
             if row is None:
                 raise ValueError("The cloud inspection queue is full. Try again shortly.")
             data["review"] = {"token": row.token, **self.proxy.reviews.snapshot(row.token)}
             self.apply_review(data)
+        elif mode == "navigate" and not verified and not passing and not confident:
+            review = self.navigation_review(target)
+            if review is not None:
+                data["review"] = review
+                self.apply_review(data, keep_url_verdict=True)
         elif not verified:
             # Retain cloud evidence after a successful proxy review automatically
             # returns the browser to its original URL. This starts no new job.
@@ -81,12 +108,72 @@ class ExtensionAPI:
                 row = None
             if row and row.status != "pending":
                 data["review"] = {"token": row.token, **self.proxy.reviews.snapshot(row.token)}
-                self.apply_review(data)
+                self.apply_review(data, keep_url_verdict=mode == "navigate")
+            elif mode == "navigate":
+                # A page approved in the last 24 hours needs no Deep scan offer.
+                approved = self.approved_review(target)
+                if approved is not None:
+                    data["review"] = approved
+                    self.apply_review(data, keep_url_verdict=True)
+        if (mode == "navigate" and passing and not verified
+                and data.get("review", {}).get("status") not in {"allow", "block"}):
+            data["verdict"] = "safe"
+            if not confident or result["status"] != "not_flagged":
+                data["unsure"] = True
+                data["reasons"] = [*data["reasons"],
+                                   f"Jev is only {confidence:.0%} confident about this address. "
+                                   "Run a deep scan to check the page itself."]
         return data
 
+    def navigation_review(self, target):
+        """Join, reuse or start the cloud review for a page the browser is about to open.
+
+        Unlike an explicit Deep scan this never discards a finished review, and a
+        page approved within the last 24 hours is not sent to the cloud again.
+        Returns None when no cloud review can run, so the address check stands.
+        """
+        reviews = self.proxy.reviews
+        if reviews.reviewer is None:
+            return None
+        approved = self.approved_review(target)
+        if approved is not None:
+            return approved
+        try:
+            row = reviews.start(self.page_url(target))
+        except ValueError:
+            # Local addresses and URLs with credentials are never sent to the cloud.
+            return None
+        if row is None:
+            return None
+        return {"token": row.token, **reviews.snapshot(row.token)}
+
     @staticmethod
-    def apply_review(data):
+    def page_url(target):
+        # The fragment never reaches the website, so the page is the same without it.
+        return urlunsplit(urlsplit(target)._replace(fragment=""))
+
+    def approved_review(self, target):
+        """The approval for a page that passed a cloud review in the last 24 hours, or None."""
+        reviews = self.proxy.reviews
+        page = self.page_url(target)
+        try:
+            if not reviews.allowed(page, "main_frame", "GET"):
+                return None
+            row = reviews.get(reviews.by_url.get(request_key(page)))
+        except ValueError:
+            return None
+        if row is not None and row.status == "allow":
+            return {"token": row.token, **reviews.snapshot(row.token)}
+        return {"status": "allow", "page_probability": None, "evidence": [],
+                "reason": "TrustLine checked this page in a cloud browser in the last 24 hours."}
+
+    @staticmethod
+    def apply_review(data, keep_url_verdict=False):
         review = data["review"]
+        # Before a page opens, a cloud check that could not decide falls back to
+        # the address check rather than holding every such page.
+        if keep_url_verdict and review["status"] == "inconclusive":
+            return data
         if review["status"] != "pending":
             data["verdict"] = {"allow": "safe", "block": "dangerous"}.get(review["status"], "suspicious")
             data["reasons"] = [review["reason"], *review["evidence"]][:6]
@@ -155,8 +242,8 @@ class AnalyzeHandler(APIHandler):
             return
         try:
             body = json.loads(self.request.body)
-            if not isinstance(body, dict) or body.get("mode", "quick") not in {"quick", "deep"}:
-                raise ValueError("Expected a URL and quick or deep mode")
+            if not isinstance(body, dict) or body.get("mode", "quick") not in MODES:
+                raise ValueError("Expected a URL and quick, deep or navigate mode")
             result = await self.api.analyze(body.get("url"), body.get("mode", "quick"))
         except (ValueError, TypeError):
             self.set_status(400)

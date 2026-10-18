@@ -12,7 +12,8 @@ from urllib.error import HTTPError, URLError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from trustline.inspection import (
-    ApprovedSites, Inspector, JevClient, JevError, NoRedirects, Observation, lookalike_readings,
+    ORIGIN_QUESTION, ApprovedSites, Inspector, JevClient, JevError, NoRedirects, Observation,
+    lookalike_readings,
     normalize_origin,
 )
 
@@ -202,9 +203,22 @@ class JevTests(unittest.TestCase):
         self.assertEqual(payload["state"], {
             "url_origin": "https://example.com", "hostname": "example.com", "method": "GET",
             "resource_type": "script", "uses_https": True, "has_punycode_label": False,
+            "top_level_domain": "com", "top_level_domain_often_abused": False,
         })
         self.assertNotIn("secret", request.data.decode())
         self.assertNotIn("private-context", request.data.decode())
+
+    def test_state_marks_often_abused_top_level_domains_for_extra_scepticism(self):
+        for url, tld, abused in [("https://app-elysium.xyz/vote", "xyz", True),
+                                 ("https://safepals.cc/", "cc", True),
+                                 ("https://shop.example.top", "top", True),
+                                 ("https://www.example.com", "com", False),
+                                 ("https://8.8.8.8", None, False)]:
+            with self.subTest(url=url):
+                state = Observation.parse({"url": url}).model_state()
+                self.assertEqual(state["top_level_domain"], tld)
+                self.assertIs(state["top_level_domain_often_abused"], abused)
+        self.assertIn("`top_level_domain_often_abused`", ORIGIN_QUESTION["instructions"])
 
     def test_lookalike_answer_raises_the_probability(self):
         self.response(self.answers(0.05, lookalike=0.89))

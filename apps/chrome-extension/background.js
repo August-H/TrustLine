@@ -6,6 +6,9 @@
  * See README.md for the daemon API contract.
  */
 
+// trustLineNudge(): the "may not be safe" prompt injected into unsure pages.
+importScripts("nudge.js");
+
 const CONFIG = {
   DAEMON_BASE_URL: "http://127.0.0.1:8765",
   HEALTH_TIMEOUT_MS: 1500,
@@ -147,7 +150,11 @@ function normalizeResult(raw, url, mode, source) {
     scoreSource: raw?.score_source ?? null,
     jevProbability: raw?.jev_probability ?? null,
     jevStatus: raw?.jev_status ?? null,
+    // |2p - 1| for Jev's yes/no answer: 0 = a coin flip, 1 = certain either way.
+    jevConfidence: typeof raw?.jev_confidence === "number" ? raw.jev_confidence : null,
     review: raw?.review ?? null,
+    // Passing score but Jev under 85% confident: opened without a cloud check.
+    unsure: raw?.unsure === true,
     verdict,
     score,
     reasons,
@@ -166,7 +173,26 @@ async function daemonJson(path, options = {}, timeout = CONFIG.QUICK_SCAN_TIMEOU
   return data;
 }
 
-async function analyzeUrl(url, mode) {
+// Polls a pending cloud review. Navigation checks turn a timeout or a lost job
+// into an inconclusive review so the address check can still decide.
+async function awaitReview(raw, mode) {
+  const deadline = Date.now() + CONFIG.DEEP_SCAN_TIMEOUT_MS;
+  try {
+    while (raw.review?.status === "pending") {
+      if (Date.now() >= deadline) throw new Error("Cloud review timed out. No approval was granted.");
+      await sleep(CONFIG.REVIEW_POLL_MS);
+      raw.review = { token: raw.review.token, ...await daemonJson(`/v1/reviews/${encodeURIComponent(raw.review.token)}`) };
+    }
+  } catch (err) {
+    if (mode !== "navigate") throw err;
+    raw.review = { token: raw.review?.token, status: "inconclusive", reason: err.message, evidence: [] };
+  }
+}
+
+// mode: "quick" (address only), "deep" (always runs a fresh cloud review), or
+// "navigate" (the loading screen: joins or reuses a cloud review, else starts one).
+// With waitForReview false, a cloud review still running resolves to null.
+async function analyzeUrl(url, mode, { waitForReview = true } = {}) {
   try {
     // Every explicit scan tries the daemon again, even after a cached health failure.
     const raw = await daemonJson("/v1/analyze", {
@@ -175,13 +201,14 @@ async function analyzeUrl(url, mode) {
       body: JSON.stringify({ url, mode }),
     });
     healthCache = { checkedAt: Date.now(), online: true, version: "0.2.0" };
-    const deadline = Date.now() + CONFIG.DEEP_SCAN_TIMEOUT_MS;
-    while (raw.review?.status === "pending") {
-      if (Date.now() >= deadline) throw new Error("Cloud review timed out. No approval was granted.");
-      await sleep(CONFIG.REVIEW_POLL_MS);
-      raw.review = { token: raw.review.token, ...await daemonJson(`/v1/reviews/${encodeURIComponent(raw.review.token)}`) };
-    }
-    if (raw.review) {
+    if (!waitForReview && raw.review?.status === "pending") return null;
+    await awaitReview(raw, mode);
+    if (raw.review?.status === "inconclusive" && mode === "navigate") {
+      // Before a page opens, a cloud check that couldn't decide leaves the
+      // address check in charge instead of holding every such page.
+      raw.reasons = [...(raw.reasons ?? []),
+        `The cloud check couldn't finish, so this verdict is based on the web address only. ${raw.review.reason}`];
+    } else if (raw.review) {
       raw.verdict = { allow: "safe", block: "dangerous" }[raw.review.status] ?? "suspicious";
       raw.reasons = [raw.review.reason, ...(raw.review.evidence ?? [])];
       raw.score = reviewedScore(raw.score, raw.review);
@@ -378,6 +405,9 @@ chrome.runtime.onStartup.addListener(async () => {
 });
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (changeInfo.status === "complete") {
+    showNudge(tabId, tab).catch((err) => console.warn("[TrustLine] Deep scan prompt failed:", err));
+  }
   if (changeInfo.url) {
     // scanNavigation stores its result under the destination before forwarding;
     // keep that one so the page isn't scanned a second time.
@@ -404,6 +434,29 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   inflight.delete(tabId);
   chrome.storage.session.remove([resultKey(tabId), scanKey(tabId)]);
 });
+
+/* ---------------------------------------------------- deep scan prompt */
+
+// The loading screen let this tab through on a passing but unsure score. Once
+// the page finishes loading, show the "may not be safe" prompt in its top-right
+// corner, under the toolbar icon. Each prompt is shown once; the domain is then
+// cleared for the session, so its other pages don't repeat it.
+async function queueNudge(tabId, domain) {
+  const { nudges = {} } = await chrome.storage.session.get("nudges");
+  await chrome.storage.session.set({ nudges: { ...nudges, [tabId]: domain } });
+}
+
+async function showNudge(tabId, tab) {
+  const { nudges = {} } = await chrome.storage.session.get("nudges");
+  const domain = nudges[tabId];
+  if (!domain) return;
+  const { [tabId]: _, ...rest } = nudges;
+  await chrome.storage.session.set({ nudges: rest });
+  // A redirect to another site, or navigating away first, drops the prompt.
+  const host = hostnameOf(tab?.url ?? "");
+  if (!isScannableUrl(tab?.url) || (host !== domain && !host.endsWith(`.${domain}`))) return;
+  await chrome.scripting.executeScript({ target: { tabId }, func: trustLineNudge });
+}
 
 /* --------------------------------------------------------------- messages */
 
@@ -436,12 +489,15 @@ const handlers = {
     return next;
   },
 
-  // Called by scanning.html with the destination it is holding.
-  async scanNavigation({ url }, sender) {
+  // Called by scanning.html with the destination it is holding. The page first
+  // asks without waiting: { action: "review" } means a cloud check is running and
+  // the page should show itself, then ask again with waitForReview.
+  async scanNavigation({ url, waitForReview = true }, sender) {
     if (!isScannableUrl(url)) throw new Error("Invalid destination");
     const tabId = sender.tab?.id;
     const settings = await getSettings();
-    const result = await analyzeUrl(url, "quick");
+    const result = await analyzeUrl(url, "navigate", { waitForReview });
+    if (result === null) return { action: "review" };
     if (tabId !== undefined) {
       await chrome.storage.session.set({ [resultKey(tabId)]: result });
       await applyActionState(tabId, result.verdict);
@@ -455,7 +511,18 @@ const handlers = {
       return { action: "warn", verdict: result.verdict, url: warning.href };
     }
     await letThrough(hostnameOf(url), { durable: checked && result.verdict === "safe" });
+    if (tabId !== undefined && checked && result.unsure) await queueNudge(tabId, hostnameOf(url));
     return { action: "proceed", verdict: result.verdict, url };
+  },
+
+  // From the prompt's "Click Here": deep-scan the page it is showing on.
+  // scanTab redirects to the warning page if the cloud blocks it.
+  async nudgeDeepScan(_, sender) {
+    const tabId = sender.tab?.id;
+    const url = sender.tab?.url;
+    if (tabId === undefined || !isScannableUrl(url)) throw new Error("This page can't be scanned");
+    const result = await scanTab(tabId, url, "deep");
+    return { verdict: result.verdict, score: result.score, reason: result.reasons[0] ?? "" };
   },
 
   async testRedirect({ tabId }) {
