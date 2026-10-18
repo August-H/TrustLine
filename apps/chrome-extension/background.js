@@ -358,7 +358,7 @@ const handlers = {
     const tab = await chrome.tabs.get(tabId);
     const { [resultKey(tabId)]: result } = await chrome.storage.session.get(resultKey(tabId));
     const target = tab.url || "https://example.com";
-    const url = warningPageUrl(target, result ?? { verdict: "dangerous", score: 12 }, "Manual test triggered from the TrustLine popup");
+    const url = warningPageUrl(target, result ?? { verdict: "dangerous", score: 12 });
     await chrome.tabs.update(tabId, { url });
     return { url };
   },

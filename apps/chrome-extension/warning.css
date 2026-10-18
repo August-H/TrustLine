@@ -218,7 +218,6 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
 .tag[data-tag="heuristic"], .tag[data-tag="network"] { color: var(--caution); }
 
 .finding-title { font-weight: 700; }
-.finding-detail { grid-column: 2; color: var(--muted); font-size: 15px; }
 
 .more {
   margin-top: 2px;
@@ -422,6 +421,5 @@ h2 { font-size: 21px; font-weight: 800; line-height: 1.25; }
   h1 { font-size: 30px; }
   .address-text { font-size: clamp(20px, calc((100vw - 32px) / (var(--chars, 24) * 0.68)), 40px); }
   .finding { grid-template-columns: 1fr; }
-  .finding-detail { grid-column: 1; }
 }
 

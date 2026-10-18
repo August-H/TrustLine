@@ -54,9 +54,9 @@ class ExtensionAPI:
         verdict = {"suspicious": "dangerous", "uncertain": "suspicious",
                    "not_flagged": "safe"}.get(result["status"], "suspicious")
         reasons = (["Domain is in the verified website database."] if verified else
-                   [f"Jev estimates {probability:.1%} probability of a deceptive URL origin.",
-                    "This score uses URL metadata, not the website's contents."] if probability is not None else
-                   [result.get("reason", "Jev score unavailable")])
+                   [f"TrustLine estimates a {probability:.1%} chance this web address is fake or misleading.",
+                    "This quick check only looked at the web address, not the page itself."] if probability is not None else
+                   [result.get("reason", "TrustLine score unavailable")])
         data = {"verdict": "safe" if verified else verdict, "score": score,
                 "verified": verified, "score_source": "verified_database" if verified else "jev",
                 "jev_probability": probability, "reasons": reasons, "target_url": target}

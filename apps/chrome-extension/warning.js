@@ -61,98 +61,99 @@ function parseReasons() {
   }
   const single = params.get("reason");
   if (single) list.push(single);
-  const clean = list.filter((r) => typeof r === "string" && r.trim()).map((r) => r.trim().slice(0, 200));
+  const clean = list
+    .filter((r) => typeof r === "string" && r.trim())
+    .map((r) => plainReason(r.trim()).slice(0, 200));
   return [...new Set(clean)].slice(0, 10);
+}
+
+// Older daemons (and results cached before an update) still send the original
+// technical wording; show it in the same plain English the daemon now uses.
+function plainReason(text) {
+  const jev = text.match(/^Jev estimates ([\d.]+%) probability of a deceptive URL origin\.?$/i);
+  if (jev) return `TrustLine estimates a ${jev[1]} chance this web address is fake or misleading.`;
+  if (/^This score uses URL metadata, not the website's contents\.?$/i.test(text)) {
+    return "This quick check only looked at the web address, not the page itself.";
+  }
+  return text.replace(/^Jev score unavailable$/i, "TrustLine score unavailable");
 }
 
 /* --------------------------------------------------------- classification */
 
 // Each rule maps a reason (from the scanner or local URL inspection) to a
-// severity tag, the real-world risks it feeds, and a plain-language explanation.
+// severity tag and the real-world risks it feeds.
 const RULES = [
   {
     id: "lookalike",
     re: /punycode|xn--|look-?alike|homograph|typosquat|impersonat/i,
     tag: "high",
     risks: ["credential", "financial"],
-    detail: "The web address copies the name of a company you may trust, using letters that look almost the same.",
   },
   {
     id: "userinfo",
     re: /embeds credentials|before the hostname/i,
     tag: "high",
     risks: ["credential"],
-    detail: "The link is written to hide where it really goes.",
   },
   {
     id: "known-bad",
     re: /phish|malware|malicious|blocklist|known threat|exploit|drive-?by/i,
     tag: "high",
     risks: ["credential", "malware"],
-    detail: "This site is on a list of known scam or harmful websites.",
   },
   {
     id: "payload",
     re: /download|executable|payload|\.(exe|dmg|apk|scr|msi|pkg)\b/i,
     tag: "high",
     risks: ["malware"],
-    detail: "This link downloads a program that could harm your computer if you open it.",
   },
   {
     id: "raw-ip",
     re: /raw ip|ip address/i,
     tag: "network",
     risks: ["malware", "credential"],
-    detail: "Real companies use a normal web name, not a string of numbers. Scammers often use numbers instead.",
   },
   {
     id: "plaintext",
     re: /not encrypted|unencrypted|\(http\)|certificate|tls|ssl/i,
     tag: "network",
     risks: ["credential", "financial"],
-    detail: "This connection is not private. Others could see anything you type, including passwords and card numbers.",
   },
   {
     id: "redirect",
     re: /redirect/i,
     tag: "network",
     risks: ["credential", "malware"],
-    detail: "The link sends you through several other sites first, a trick used to hide scams.",
   },
   {
     id: "financial-bait",
     re: /wallet|payment|billing|card|bank|crypto|invoice|refund/i,
     tag: "heuristic",
     risks: ["financial"],
-    detail: "The address mentions payments or banking, a common trick to get your card or bank details.",
   },
   {
     id: "credential-bait",
     re: /credential|bait|login|sign-?in|verify|password|account/i,
     tag: "heuristic",
     risks: ["credential"],
-    detail: "Words like \"login\" or \"verify\" in an unfamiliar address are a common sign of a fake sign-in page.",
   },
   {
     id: "tld",
     re: /top-level domain|\btld\b|abuse/i,
     tag: "heuristic",
     risks: ["malware", "financial"],
-    detail: "This kind of web address is cheap to set up and often used by short-lived scam sites.",
   },
   {
     id: "structure",
     re: /hyphen|subdomain|unusually long|hostname is/i,
     tag: "heuristic",
     risks: ["credential"],
-    detail: "Long or oddly built addresses are used to hide a fake company name inside a real-looking one.",
   },
   {
     id: "info",
     re: /no known risk|reviewed by|manual test|flagged by trustline/i,
     tag: "info",
     risks: [],
-    detail: "",
   },
 ];
 
@@ -163,7 +164,6 @@ const fallbackRule = {
   id: "other",
   tag: "heuristic",
   risks: ["credential"],
-  detail: "TrustLine found something about this site that matches known scams.",
 };
 
 function classify(text) {
@@ -211,15 +211,16 @@ function buildFindings() {
     findings.push({ text, rule });
     seen.add(rule.id);
   }
+  // Informational rows ("Manual test…", "No known risk signals…") aren't reasons; leave them out.
   const actionable = findings.filter((f) => f.rule.tag !== "info");
   // A safe verdict with no flagged reasons has nothing to explain; don't invent one.
   if (actionable.length === 0 && verdict !== "safe") {
-    findings.push({
+    actionable.push({
       text: verdict === "dangerous" ? "TrustLine gave this site a very low trust score" : "TrustLine gave this site a low trust score",
       rule: fallbackRule,
     });
   }
-  return findings.sort((a, b) => TAG_ORDER[a.rule.tag] - TAG_ORDER[b.rule.tag]);
+  return actionable.sort((a, b) => TAG_ORDER[a.rule.tag] - TAG_ORDER[b.rule.tag]);
 }
 
 /* ---------------------------------------------------------------- render */
@@ -381,7 +382,6 @@ function renderFindings(findings) {
       el("li", { class: "finding", ...(i >= VISIBLE_FINDINGS ? { hidden: "" } : {}) }, [
         el("span", { class: "tag", dataset: { tag: rule.tag }, text: TAG_LABELS[rule.tag] }),
         el("p", { class: "finding-title", text }),
-        rule.detail ? el("p", { class: "finding-detail", text: rule.detail }) : null,
       ])
     )
   );
