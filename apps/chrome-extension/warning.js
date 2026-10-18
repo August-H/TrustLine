@@ -4,9 +4,22 @@ const COOLDOWN_MS = 5_000;
 
 const params = new URLSearchParams(location.search);
 const target = params.get("url") || "";
-const verdict = params.get("verdict") === "suspicious" ? "suspicious" : "dangerous";
 const rawScore = params.get("score");
 const score = rawScore && /^\d{1,3}$/.test(rawScore) ? Math.min(100, Number(rawScore)) : null;
+
+// Same thresholds as verdictFromScore() in background.js.
+function verdictFromScore(value) {
+  if (value >= 70) return "safe";
+  if (value >= 40) return "suspicious";
+  return "dangerous";
+}
+
+// An explicit verdict wins: a cloud review can block a site whose origin score
+// is high, and that must not turn the banner green. Without one, the score
+// decides, and with neither the page stays on its most cautious setting.
+const VERDICTS = ["safe", "suspicious", "dangerous"];
+const rawVerdict = String(params.get("verdict") ?? "").toLowerCase();
+const verdict = VERDICTS.includes(rawVerdict) ? rawVerdict : score === null ? "dangerous" : verdictFromScore(score);
 
 let parsed = null;
 let domain = "";
@@ -199,7 +212,8 @@ function buildFindings() {
     seen.add(rule.id);
   }
   const actionable = findings.filter((f) => f.rule.tag !== "info");
-  if (actionable.length === 0) {
+  // A safe verdict with no flagged reasons has nothing to explain; don't invent one.
+  if (actionable.length === 0 && verdict !== "safe") {
     findings.push({
       text: verdict === "dangerous" ? "TrustLine gave this site a very low trust score" : "TrustLine gave this site a low trust score",
       rule: fallbackRule,
@@ -236,30 +250,24 @@ const RISKS = [
 ];
 
 function renderHeader() {
-  const paused = verdict === "suspicious";
   document.body.dataset.status = verdict;
-  document.title = domain ? `TrustLine ${paused ? "paused" : "blocked"} ${domain}` : "TrustLine blocked a site";
-  document.getElementById("title").textContent = paused ? "This site looks suspicious" : "This site may be dangerous";
-  const lead = document.getElementById("lead");
-  lead.replaceChildren(
-    paused ? "TrustLine flagged this website for caution. " : "TrustLine flagged this website as dangerous. "
-  );
-  if (score === null) {
-    lead.append(paused ? "Some things about it look like a scam." : "It looks like a scam or fake website.");
-  } else {
-    const rating = score < 40 ? ", which is very low" : score < 70 ? ", which is low" : "";
-    lead.append("Its safety score is ", el("strong", { text: `${score} out of 100` }), `${rating}.`);
-  }
+  const action = { safe: "checked", suspicious: "paused", dangerous: "blocked" }[verdict];
+  document.title = domain ? `TrustLine ${action} ${domain}` : `TrustLine ${action} a site`;
+  document.getElementById("title").textContent = {
+    safe: "This site looks safe",
+    suspicious: "This site looks suspicious",
+    dangerous: "This site may be dangerous",
+  }[verdict];
 }
 
-// Zones match the verdict thresholds in background.js: under 40 dangerous, under 70 suspicious.
 function renderScore() {
   const section = document.getElementById("score");
   if (score === null) {
     section.hidden = true;
     return;
   }
-  const zone = score < 40 ? "dangerous" : score < 70 ? "suspicious" : "safe";
+  const zone = verdictFromScore(score);
+  section.dataset.zone = zone;
   document.getElementById("score-value").textContent = String(score);
   const meter = document.getElementById("score-meter");
   meter.setAttribute("aria-valuenow", String(score));
@@ -267,11 +275,6 @@ function renderScore() {
   meter.dataset.zone = zone;
   document.getElementById("score-marker").style.left = `${score}%`;
   document.getElementById("score-fill").style.width = `${score}%`;
-  document.getElementById("score-note").textContent = {
-    dangerous: "Under 40 means strong signs of a scam. Most safe sites score above 70.",
-    suspicious: "40 to 69 means some things look wrong. Most safe sites score above 70.",
-    safe: "Most safe sites score above 70, but TrustLine found something worth checking.",
-  }[zone];
 }
 
 /* --------------------------------------------------------------- address */
@@ -452,7 +455,7 @@ function updateGate() {
   input.disabled = !acknowledged;
   input.dataset.match = !typed ? "" : match ? "yes" : "no";
   if (acknowledged && typed && !match) hint.textContent = "Doesn't match the flagged hostname yet.";
-  else hint.textContent = "Pasting is disabled. Type it out by hand.";
+  else hint.textContent = "";
 
   const unlocked = acknowledged && cooldownDone && match && Boolean(safeTarget);
   stepProceed.dataset.state = unlocked ? "active" : "locked";
@@ -465,7 +468,7 @@ function tickCooldown() {
   cooldownFill.style.width = `${pct * 100}%`;
   if (pct >= 1) {
     cooldownDone = true;
-    cooldownText.textContent = "Cooldown complete";
+    cooldownText.textContent = "";
     updateGate();
     return;
   }
@@ -485,7 +488,7 @@ ack.addEventListener("change", () => {
     // Unchecking resets the whole gate.
     input.value = "";
     cooldownFill.style.width = "0";
-    cooldownText.textContent = "Cooldown starts after step 1";
+    cooldownText.textContent = "";
   }
   updateGate();
 });
