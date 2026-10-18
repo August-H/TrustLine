@@ -66,12 +66,21 @@ test("deep scan posts deep mode and polls the real job without replacing Jev sco
   assert.equal(result.reasons[0], "Cloud review completed");
 });
 
-test("a cloud block overrides the verdict while preserving the URL score", async () => {
+test("a cloud block caps the score in the Dangerous zone", async () => {
   const w = worker([{ verdict: "safe", score: 92,
     review: { status: "block", reason: "Observed a scam", evidence: [] } }]);
   const result = await w.analyze("deep");
   assert.equal(result.verdict, "dangerous");
-  assert.equal(result.score, 92);
+  assert.equal(result.score, 39);
+});
+
+test("a completed Deep scan uses the lower of the URL and page scores", async () => {
+  for (const [score, page, expected] of [[73, 0.5, 50], [40, 0.1, 40], [null, 0.25, 75], [88, null, 88]]) {
+    const w = worker([{ verdict: "suspicious", score,
+      review: { token: "job", status: "pending" } },
+      { status: "allow", reason: "Reviewed", evidence: [], page_probability: page }]);
+    assert.equal((await w.analyze("deep")).score, expected);
+  }
 });
 
 test("an inconclusive cloud review never becomes a safe verdict", async () => {
@@ -108,14 +117,14 @@ test("a background cloud job stores its result without an open popup", async () 
   assert.equal(w.storage["scan:1"], undefined);
 });
 
-test("cloud block redirects the tab to a warning with the actual target and Jev score", async () => {
+test("cloud block redirects the tab to a warning with the actual target and capped score", async () => {
   const w = worker([{ target_url: "https://original.example/", score: 92, verdict: "safe",
     review: { status: "block", reason: "Remote scam evidence", evidence: [] } }]);
   await vm.runInContext("scanTab(1, 'https://ordinary.example/', 'deep')", w.context);
   const destination = new URL(w.tab.url);
   assert.equal(destination.pathname, "/warning.html");
   assert.equal(destination.searchParams.get("url"), "https://original.example/");
-  assert.equal(destination.searchParams.get("score"), "92");
+  assert.equal(destination.searchParams.get("score"), "39");
   assert.equal(destination.searchParams.get("verdict"), "dangerous");
 });
 

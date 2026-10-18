@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -8,8 +9,9 @@ from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from trustline.inspection import JevError
 from trustline.reviews import ReviewManager, review_url
-from trustline.remote import CloudflareBrowser, RemoteError, RemoteReviewer, public_url
+from trustline.remote import CloudflareBrowser, RemoteError, RemoteReviewer, page_state, public_url
 
 
 class ReviewTests(unittest.IsolatedAsyncioTestCase):
@@ -112,6 +114,61 @@ class RemoteReviewerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await RemoteReviewer(model, lambda: browser).review("https://ordinary.example/")
         self.assertEqual(browser.close.await_count, 2)
+
+    def allowing_model(self):
+        return Mock(action=Mock(return_value={"action": "finish", "verdict": "allow",
+                                              "reason": "Looks fine", "evidence": []}))
+
+    async def test_jev_page_check_blocks_a_scam_the_model_would_allow(self):
+        for deceptive, money, verdict in [(0.85, 0.1, "block"), (0.65, 0.9, "block"),
+                                          (0.65, 0.1, "allow"), (0.3, 0.9, "allow")]:
+            with self.subTest(deceptive=deceptive, money=money):
+                browser = self.browser(url="https://shop.example/sale?ref=private")
+                jev = Mock(assess_page=Mock(return_value=(deceptive, money)))
+                result = await RemoteReviewer(self.allowing_model(), lambda: browser, jev=jev,
+                                              threshold=0.8, money_threshold=0.6).review("https://shop.example/")
+                self.assertEqual(result["verdict"], verdict)
+                self.assertEqual(result["page_probability"], deceptive)
+                if verdict == "block":
+                    self.assertEqual(result["reason"], "TrustLine found signs of a scam on this page.")
+                    self.assertEqual(len(result["evidence"]), 1 + (money >= 0.5))
+                jev.assess_page.assert_called_once()
+
+    async def test_jev_scam_finding_still_blocks_when_the_model_fails(self):
+        model = Mock(action=Mock(side_effect=RuntimeError("plan renewal failed")))
+        for deceptive, blocks in [(0.95, True), (0.1, False)]:
+            browser = self.browser(url="https://shop.example/")
+            jev = Mock(assess_page=Mock(return_value=(deceptive, 0.9)))
+            reviewer = RemoteReviewer(model, lambda: browser, jev=jev)
+            if blocks:
+                self.assertEqual((await reviewer.review("https://shop.example/"))["verdict"], "block")
+            else:
+                with self.assertRaises(RuntimeError):
+                    await reviewer.review("https://shop.example/")
+            browser.close.assert_awaited_once()
+
+    async def test_unavailable_page_check_leaves_the_model_verdict(self):
+        browser = self.browser(url="https://shop.example/")
+        jev = Mock(assess_page=Mock(side_effect=JevError("Jev unavailable")))
+        result = await RemoteReviewer(self.allowing_model(), lambda: browser, jev=jev).review("https://shop.example/")
+        self.assertEqual(result["verdict"], "allow")
+
+    def test_page_state_sends_only_origin_text_and_form_shape(self):
+        state = page_state({
+            "url": "https://shop.example/checkout?session=secret", "title": "Checkout", "text": "Pay now",
+            "screenshot": "data:image/jpeg;base64,secret", "links": [{"url": "https://secret.example/"}],
+            "forms": [{"method": "post", "action": "https://collector.example/steal?id=secret",
+                       "inputs": [{"type": "password", "name": "pw"}]},
+                      {"method": "get", "action": "javascript:void(0)", "inputs": []}],
+        })
+        self.assertEqual(state, {
+            "url_origin": "https://shop.example", "hostname": "shop.example", "title": "Checkout",
+            "text": "Pay now", "forms": [
+                {"method": "post", "action_origin": "https://collector.example",
+                 "inputs": [{"type": "password", "name": "pw"}]},
+                {"method": "get", "action_origin": None, "inputs": []}],
+        })
+        self.assertNotIn("secret", json.dumps(state))
 
     async def test_cloudflare_browser_rejects_forms_private_networks_and_cross_origin_navigation(self):
         browser = CloudflareBrowser("a" * 32, "synthetic-token")

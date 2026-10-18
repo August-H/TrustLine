@@ -57,6 +57,22 @@ function clampScore(n) {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
+// Mirrors reviewed_score in the daemon's api.py: the lower of the URL and page
+// scores, and a blocked page never scores above the Dangerous zone.
+const BLOCKED_MAX_SCORE = 39;
+
+function reviewedScore(score, review) {
+  const valid = typeof score === "number" && Number.isFinite(score);
+  let next = valid ? score : null;
+  const page = review?.page_probability;
+  if (typeof page === "number" && Number.isFinite(page)) {
+    const pageScore = clampScore((1 - page) * 100);
+    next = next === null ? pageScore : Math.min(next, pageScore);
+  }
+  if (review?.status === "block" && next !== null) next = Math.min(next, BLOCKED_MAX_SCORE);
+  return next;
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -165,6 +181,7 @@ async function analyzeUrl(url, mode) {
     if (raw.review) {
       raw.verdict = { allow: "safe", block: "dangerous" }[raw.review.status] ?? "suspicious";
       raw.reasons = [raw.review.reason, ...(raw.review.evidence ?? [])];
+      raw.score = reviewedScore(raw.score, raw.review);
     }
     return normalizeResult(raw, url, mode, "daemon");
   } catch (err) {

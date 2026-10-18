@@ -19,9 +19,10 @@ class FakeJev:
     def assess(self, observation):
         with (state / "model-inputs.jsonl").open("a") as output:
             output.write(json.dumps(observation.model_state()) + "\n")
-        return 0.05 if observation.hostname in {
+        probability = 0.05 if observation.hostname in {
             "clean.invalid", "wrong-host.invalid", "untrusted.invalid",
         } else 0.95
+        return probability, 0.0
 
 
 class LocalRouting:

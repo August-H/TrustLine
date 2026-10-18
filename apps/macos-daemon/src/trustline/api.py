@@ -11,6 +11,9 @@ from tornado.web import Application, RequestHandler
 from .inspection import Observation
 from .reviews import request_key
 
+# Top of the extension's Dangerous zone (scores under 40).
+BLOCKED_MAX_SCORE = 39
+
 
 class ExtensionAPI:
     def __init__(self, proxy):
@@ -57,6 +60,8 @@ class ExtensionAPI:
                    [f"TrustLine estimates a {probability:.1%} chance this web address is fake or misleading.",
                     "This quick check only looked at the web address, not the page itself."] if probability is not None else
                    [result.get("reason", "TrustLine score unavailable")])
+        if result.get("money_site") and not verified:
+            reasons.append("This looks like a money or shopping site, so TrustLine checks it more strictly.")
         data = {"verdict": "safe" if verified else verdict, "score": score,
                 "verified": verified, "score_source": "verified_database" if verified else "jev",
                 "jev_probability": probability, "jev_status": result["status"],
@@ -82,11 +87,22 @@ class ExtensionAPI:
     @staticmethod
     def apply_review(data):
         review = data["review"]
-        # The cloud verdict controls the warning, but never invents a Jev score.
         if review["status"] != "pending":
             data["verdict"] = {"allow": "safe", "block": "dangerous"}.get(review["status"], "suspicious")
             data["reasons"] = [review["reason"], *review["evidence"]][:6]
+            data["score"] = reviewed_score(data["score"], review)
         return data
+
+
+def reviewed_score(score, review):
+    """The lower of the URL and page scores; a blocked page never scores above Dangerous."""
+    page = review.get("page_probability")
+    if page is not None:
+        page_score = round((1 - page) * 100)
+        score = page_score if score is None else min(score, page_score)
+    if review["status"] == "block" and score is not None:
+        score = min(score, BLOCKED_MAX_SCORE)
+    return score
 
 
 class APIHandler(RequestHandler):

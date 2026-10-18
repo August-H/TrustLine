@@ -10,7 +10,7 @@ from tornado.testing import AsyncHTTPTestCase
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from trustline.api import ExtensionAPI, application
+from trustline.api import ExtensionAPI, application, reviewed_score
 from trustline.approvals import ReviewedPages
 from trustline.inspection import ApprovedSites, Inspector, JevError
 from trustline.proxy import InspectionProxy
@@ -19,7 +19,7 @@ from trustline.reviews import ReviewManager
 
 def fixture(directory, probability=0.27, verdict="allow"):
     database = Path(directory) / "approved.sqlite3"
-    jev = Mock(assess=Mock(return_value=probability))
+    jev = Mock(assess=Mock(return_value=(probability, 0.0)))
     reviewer = Mock(review=AsyncMock(return_value={
         "verdict": verdict, "reason": "Remote browser evidence", "evidence": ["Rendered page checked"]}))
     manager = ReviewManager(reviewer, approvals=ReviewedPages(database))
@@ -66,7 +66,7 @@ class ExtensionAPITests(unittest.IsolatedAsyncioTestCase):
         self.reviewer.review.assert_not_awaited()
 
     async def test_jev_status_survives_a_cloud_verdict(self):
-        self.jev.assess.return_value = 0.95
+        self.jev.assess.return_value = (0.95, 0.0)
         result = await self.api.analyze("https://ordinary.example/", "quick")
         self.assertEqual(result["jev_status"], "suspicious")
         self.assertEqual(result["verdict"], "dangerous")
@@ -99,14 +99,31 @@ class ExtensionAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next_result["score"], 73)
         self.assertEqual(next_result["review"]["status"], "allow")
 
-    async def test_blocking_cloud_verdict_is_separate_from_high_url_score(self):
+    async def test_blocking_cloud_verdict_caps_a_high_url_score(self):
         self.reviewer.review.return_value["verdict"] = "block"
         result = await self.api.analyze("https://ordinary.example/", "deep")
         result["review"] = await self.finish_review(result)
         self.api.apply_review(result)
         self.assertEqual(result["verdict"], "dangerous")
-        self.assertEqual(result["score"], 73)
+        self.assertEqual(result["score"], 39)
         self.assertFalse(self.proxy.reviews.allowed("https://ordinary.example/", "main_frame", "GET"))
+
+    async def test_page_probability_lowers_the_score_for_later_quick_scans(self):
+        self.reviewer.review.return_value["page_probability"] = 0.6
+        result = await self.api.analyze("https://ordinary.example/", "deep")
+        review = await self.finish_review(result)
+        self.assertEqual(review["page_probability"], 0.6)
+        later = await self.api.analyze("https://ordinary.example/", "quick")
+        self.assertEqual(later["verdict"], "safe")
+        self.assertEqual(later["score"], 40)
+
+    def test_reviewed_score_combines_url_page_and_block(self):
+        for score, page, status, expected in [(73, None, "allow", 73), (73, 0.6, "allow", 40),
+                                              (20, 0.1, "allow", 20), (None, 0.25, "inconclusive", 75),
+                                              (92, None, "block", 39), (92, 0.05, "block", 39),
+                                              (12, None, "block", 12), (None, None, "block", None)]:
+            with self.subTest(score=score, page=page, status=status):
+                self.assertEqual(reviewed_score(score, {"status": status, "page_probability": page}), expected)
 
     async def test_explicit_deep_scan_repeats_completed_review_but_joins_pending_proxy_review(self):
         url = "https://ordinary.example/"

@@ -29,8 +29,9 @@ proxy and trust its certificate. The extension alone scans after navigation star
   does not stop the review. A pending proxy review is reused; a completed review
   is rescanned when Deep scan is clicked again.
 - The cloud verdict and evidence control the result and dangerous-site warning.
-  They do not replace the Jev score. A page can have a high URL score and still be
-  blocked because the cloud browser observed a scam in its contents.
+  After a Deep scan, the score is the lower of the Jev URL score and Jev's score for
+  the page the cloud browser loaded. A blocked page never scores above 39, the top
+  of the Dangerous zone, even when the URL looked fine.
 - Successful page reviews persist for 24 hours in `scanned_pages`, separate from
   permanent trusted domains. These page approvals do not give the whole domain 100.
 - Missing Jev results display `--`. An unavailable cloud review reports a failure or

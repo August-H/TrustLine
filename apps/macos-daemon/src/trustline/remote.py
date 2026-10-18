@@ -9,7 +9,7 @@ import socket
 from urllib.parse import urlsplit
 from urllib.error import HTTPError
 
-from .inspection import is_local_host, normalize_origin
+from .inspection import MONEY_SITE, is_local_host, normalize_origin
 from .reviews import review_url
 from .transport import request_json
 
@@ -203,33 +203,100 @@ class CloudflareBrowser:
                 await self.playwright.stop()
 
 
+def page_state(observation):
+    """The landing page as Jev sees it: no path, query, screenshot, or link targets."""
+    origin, hostname = normalize_origin(observation["url"])
+    forms = []
+    for form in observation.get("forms", []):
+        try:
+            action_origin = normalize_origin(form.get("action"))[0]
+        except ValueError:
+            action_origin = None
+        forms.append({"method": form.get("method"), "action_origin": action_origin,
+                      "inputs": form.get("inputs", [])})
+    return {"url_origin": origin, "hostname": hostname, "title": observation.get("title", ""),
+            "text": observation.get("text", ""), "forms": forms}
+
+
 class RemoteReviewer:
-    def __init__(self, model, browser_factory, *, max_steps=6):
+    def __init__(self, model, browser_factory, *, max_steps=6, jev=None, threshold=0.8,
+                 money_threshold=0.6):
         self.model, self.browser_factory, self.max_steps = model, browser_factory, max_steps
+        self.jev, self.threshold, self.money_threshold = jev, threshold, money_threshold
 
     async def review(self, url):
         browser = self.browser_factory()
-        history = []
+        checks = []
         try:
-            await browser.start(url)
-            for step in range(self.max_steps):
-                observation = await browser.observe()
-                action = await asyncio.to_thread(self.model.action, observation, history)
-                if action.get("action") == "finish":
-                    verdict = action.get("verdict")
-                    if verdict not in {"allow", "block", "inconclusive"}:
-                        raise RemoteError("Invalid model verdict")
-                    # A restricted, incomplete page cannot earn an automatic pass.
-                    if verdict == "allow" and (observation.get("policy_blocks")
-                            or observation.get("http_status", 0) not in range(200, 300)
-                            or not observation.get("text", "").strip()):
-                        return {"verdict": "inconclusive", "reason": "The page could not be inspected completely.", "evidence": []}
-                    return {"verdict": verdict, "reason": action.get("reason", ""),
-                            "evidence": action.get("evidence", [])}
-                history.append({"page_url": observation.get("url"), "title": observation.get("title"),
-                                "observed_text": observation.get("text", "")[:4000],
-                                "action": action.get("action"), "reason": str(action.get("reason", ""))[:400]})
-                await browser.act(action)
-            return {"verdict": "inconclusive", "reason": "The browser action limit was reached.", "evidence": []}
+            try:
+                result = await self.explore(browser, url, checks)
+            except Exception:
+                page = await checks[0] if checks else None
+                # A scam Jev found on the page still blocks it if the cloud model fails.
+                if self.page_flagged(page):
+                    return self.page_block(page)
+                raise
+            page = await checks[0] if checks else None
+            # Jev finding a scam blocks the page even when the model would allow it.
+            if self.page_flagged(page) and result["verdict"] != "block":
+                return self.page_block(page)
+            if page:
+                result["page_probability"] = page[0]
+            return result
         finally:
+            for check in checks:
+                check.cancel()
             await browser.close()
+
+    async def explore(self, browser, url, checks):
+        history = []
+        await browser.start(url)
+        for step in range(self.max_steps):
+            observation = await browser.observe()
+            if not checks and self.jev is not None:
+                # Jev reads the landing page while the model decides its first action.
+                checks.append(asyncio.create_task(self.check_page(observation)))
+            action = await asyncio.to_thread(self.model.action, observation, history)
+            if action.get("action") == "finish":
+                return self.finish(action, observation)
+            history.append({"page_url": observation.get("url"), "title": observation.get("title"),
+                            "observed_text": observation.get("text", "")[:4000],
+                            "action": action.get("action"), "reason": str(action.get("reason", ""))[:400]})
+            await browser.act(action)
+        return {"verdict": "inconclusive", "reason": "The browser action limit was reached.", "evidence": []}
+
+    @staticmethod
+    def finish(action, observation):
+        verdict = action.get("verdict")
+        if verdict not in {"allow", "block", "inconclusive"}:
+            raise RemoteError("Invalid model verdict")
+        # A restricted, incomplete page cannot earn an automatic pass.
+        if verdict == "allow" and (observation.get("policy_blocks")
+                or observation.get("http_status", 0) not in range(200, 300)
+                or not observation.get("text", "").strip()):
+            return {"verdict": "inconclusive", "reason": "The page could not be inspected completely.", "evidence": []}
+        return {"verdict": verdict, "reason": action.get("reason", ""),
+                "evidence": action.get("evidence", [])}
+
+    async def check_page(self, observation):
+        """Return Jev's deceptive-page and money-site probabilities, or None if unavailable."""
+        try:
+            return await asyncio.to_thread(self.jev.assess_page, page_state(observation))
+        except Exception:
+            # The cloud model's verdict stands alone when the page check is unavailable.
+            return None
+
+    def page_flagged(self, page):
+        if page is None:
+            return False
+        deceptive, money = page
+        return deceptive >= (self.money_threshold if money >= MONEY_SITE else self.threshold)
+
+    @staticmethod
+    def page_block(page):
+        deceptive, money = page
+        evidence = [f"TrustLine estimates a {deceptive:.0%} chance this page is phishing or a scam."]
+        if money >= MONEY_SITE:
+            evidence.append("This looks like a money or shopping site, so TrustLine checks it more strictly.")
+        return {"verdict": "block", "reason": "TrustLine found signs of a scam on this page.",
+                "evidence": evidence, "page_probability": deceptive}

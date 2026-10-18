@@ -52,6 +52,8 @@ def main():
     daemon = commands.add_parser("serve", help="Run the background analysis service")
     daemon.add_argument("--model", default="jev-latest")
     daemon.add_argument("--threshold", type=float, default=0.8)
+    daemon.add_argument("--money-threshold", type=float, default=0.6,
+                        help="Stricter threshold for crypto, finance, and shopping sites")
     daemon.add_argument("--port", type=int, default=8899)
     daemon.add_argument("--api-port", type=int, default=8765, help="Loopback Chrome extension API port")
     browser = commands.add_parser("launch-chrome", help="Open a Chrome session using the proxy")
@@ -107,8 +109,10 @@ def main():
             account_id, token = setting("CLOUDFLARE_ACCOUNT_ID"), setting("CLOUDFLARE_API_TOKEN")
             if not account.status()["using_chatgpt_plan"] or not account_id or not token:
                 raise ValueError("Complete chatgpt-login and configure Cloudflare before running review")
+            key = api_key()
             async def run_review():
-                manager = ReviewManager(RemoteReviewer(ChatGPTPlanClient(account), lambda: CloudflareBrowser(account_id, token)),
+                manager = ReviewManager(RemoteReviewer(ChatGPTPlanClient(account), lambda: CloudflareBrowser(account_id, token),
+                                                       jev=JevClient(key) if key else None),
                                         approvals=ReviewedPages(args.state_dir / "approved.sqlite3"))
                 try:
                     row = manager.start(args.url)
@@ -130,7 +134,8 @@ def main():
         sites = ApprovedSites(args.state_dir / "approved.sqlite3")
         if args.command in {"serve", "inspect"}:
             inspector = Inspector(sites, JevClient(api_key(), model=getattr(args, "model", "jev-latest")),
-                                  getattr(args, "threshold", 0.8))
+                                  getattr(args, "threshold", 0.8),
+                                  money_threshold=getattr(args, "money_threshold", None))
             if args.command == "serve":
                 try:
                     from .proxy import run_proxy
@@ -142,7 +147,9 @@ def main():
                 account_id, token = setting("CLOUDFLARE_ACCOUNT_ID"), setting("CLOUDFLARE_API_TOKEN")
                 reviewer = None
                 if account.status()["using_chatgpt_plan"] and account_id and token:
-                    reviewer = RemoteReviewer(ChatGPTPlanClient(account), lambda: CloudflareBrowser(account_id, token))
+                    reviewer = RemoteReviewer(ChatGPTPlanClient(account), lambda: CloudflareBrowser(account_id, token),
+                                              jev=inspector.jev, threshold=inspector.threshold,
+                                              money_threshold=inspector.money_threshold)
                 asyncio.run(run_proxy(args.state_dir, inspector, args.port, reviewer=reviewer, api_port=args.api_port))
             else:
                 print(json.dumps(inspector.inspect({"url": args.url})))

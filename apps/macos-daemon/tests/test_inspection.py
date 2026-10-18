@@ -22,7 +22,7 @@ class InspectionTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.sites = ApprovedSites(Path(self.directory.name) / "approved.sqlite3")
         self.jev = Mock()
-        self.jev.assess.return_value = 0.95
+        self.jev.assess.return_value = (0.95, 0.0)
         self.inspector = Inspector(self.sites, self.jev)
 
     def tearDown(self):
@@ -89,11 +89,20 @@ class InspectionTests(unittest.TestCase):
         for probability, status in [(0.8, "suspicious"), (0.79, "uncertain"),
                                     (0.5, "uncertain"), (0.2, "not_flagged"),
                                     (0.20000000000000004, "uncertain"), (0.1, "not_flagged")]:
-            self.jev.assess.return_value = probability
+            self.jev.assess.return_value = (probability, 0.0)
             self.inspector.cache.clear()
             result, output = self.inspect("https://example.com")
             self.assertEqual(result["status"], status)
             self.assertEqual(bool(output), status == "suspicious")
+
+    def test_money_sites_use_the_stricter_threshold(self):
+        for probability, money, status in [(0.64, 0.96, "suspicious"), (0.6, 0.5, "suspicious"),
+                                           (0.59, 0.96, "uncertain"), (0.64, 0.49, "uncertain")]:
+            self.jev.assess.return_value = (probability, money)
+            self.inspector.cache.clear()
+            result, _ = self.inspect("https://example.com")
+            self.assertEqual(result["status"], status)
+            self.assertEqual(result["money_site"], money >= 0.5)
 
     def test_cache_suppresses_repeated_model_calls_and_console_messages(self):
         self.inspect("https://evil.example/first")
@@ -143,6 +152,10 @@ class InspectionTests(unittest.TestCase):
         for threshold in [float("nan"), float("inf"), -1, 0.4, 1.1]:
             with self.assertRaises(ValueError):
                 Inspector(self.sites, self.jev, threshold=threshold)
+        for money_threshold in [float("nan"), 0.4, 0.85]:
+            with self.assertRaises(ValueError):
+                Inspector(self.sites, self.jev, threshold=0.8, money_threshold=money_threshold)
+        self.assertEqual(Inspector(self.sites, self.jev, threshold=0.55).money_threshold, 0.55)
 
 
 class JevTests(unittest.TestCase):
@@ -162,9 +175,10 @@ class JevTests(unittest.TestCase):
         self.client.opener = Mock()
         self.client.opener.open.return_value = response
 
-    def answers(self, suspicious, lookalike=0.1):
+    def answers(self, suspicious, lookalike=0.1, money=0.2):
         return {"answers": {"suspicious": {"type": "noul", "noul": suspicious},
-                            "lookalike": {"type": "noul", "noul": lookalike}}}
+                            "lookalike": {"type": "noul", "noul": lookalike},
+                            "money": {"type": "noul", "noul": money}}}
 
     def test_official_contract_and_data_minimization(self):
         self.response({
@@ -172,12 +186,12 @@ class JevTests(unittest.TestCase):
             **self.answers(0.9),
             "usage": {"input_tokens": 120, "output_tokens": 12},
         })
-        self.assertEqual(self.client.assess(self.observation), 0.9)
+        self.assertEqual(self.client.assess(self.observation), (0.9, 0.2))
         request = self.client.opener.open.call_args.args[0]
         self.assertEqual(request.full_url, "https://api.typesafe.ai/v1/systemone")
         payload = json.loads(request.data)
         self.assertEqual(payload["model"], "jev-latest")
-        self.assertEqual(set(payload["questions"]), {"suspicious", "lookalike"})
+        self.assertEqual(set(payload["questions"]), {"suspicious", "lookalike", "money"})
         for question in payload["questions"].values():
             self.assertEqual(question["type"], "noul")
             self.assertEqual(set(question["criteria"]), {"true", "false"})
@@ -194,7 +208,17 @@ class JevTests(unittest.TestCase):
 
     def test_lookalike_answer_raises_the_probability(self):
         self.response(self.answers(0.05, lookalike=0.89))
-        self.assertEqual(self.client.assess(self.observation), 0.89)
+        self.assertEqual(self.client.assess(self.observation)[0], 0.89)
+
+    def test_page_assessment_returns_deception_and_money_site_probabilities(self):
+        self.response({"answers": {"deceptive": {"type": "noul", "noul": 0.97},
+                                   "money": {"type": "noul", "noul": 0.9}}})
+        page = {"url_origin": "https://shop.example", "hostname": "shop.example",
+                "title": "Sale", "text": "90% off, crypto only", "forms": []}
+        self.assertEqual(self.client.assess_page(page), (0.97, 0.9))
+        payload = json.loads(self.client.opener.open.call_args.args[0].data)
+        self.assertEqual(payload["state"], page)
+        self.assertEqual(set(payload["questions"]), {"deceptive", "money"})
 
     def test_lookalike_readings_undo_character_substitutions(self):
         for hostname, reading in [("visu4lstudio.com", "visualstudio"), ("paypa1.com", "paypal"),
@@ -209,15 +233,17 @@ class JevTests(unittest.TestCase):
         self.assertIn("l" * 60 + "linkedin", lookalike_readings(long_host))
 
     def test_ip_origins_ask_only_the_main_question(self):
-        self.response({"answers": {"suspicious": {"type": "noul", "noul": 0.3}}})
+        self.response({"answers": {"suspicious": {"type": "noul", "noul": 0.3},
+                                   "money": {"type": "noul", "noul": 0.1}}})
         observation = Observation.parse({"url": "https://8.8.8.8"})
-        self.assertEqual(self.client.assess(observation), 0.3)
+        self.assertEqual(self.client.assess(observation), (0.3, 0.1))
         payload = json.loads(self.client.opener.open.call_args.args[0].data)
-        self.assertEqual(set(payload["questions"]), {"suspicious"})
+        self.assertEqual(set(payload["questions"]), {"suspicious", "money"})
 
     def test_invalid_probabilities_are_rejected(self):
         for value in [True, "0.9", None, -0.1, 1.1, float("nan"), float("inf")]:
-            for answers in [self.answers(value), self.answers(0.1, lookalike=value)]:
+            for answers in [self.answers(value), self.answers(0.1, lookalike=value),
+                            self.answers(0.1, money=value)]:
                 self.response(answers)
                 with self.subTest(value=value), self.assertRaises(JevError):
                     self.client.assess(self.observation)
@@ -270,7 +296,7 @@ class JevTests(unittest.TestCase):
                     self.client.assess(self.observation)
             self.assertEqual(self.client.opener.open.call_count, 2)
             clock.return_value = 3
-            self.assertEqual(self.client.assess(self.observation), 0.1)
+            self.assertEqual(self.client.assess(self.observation), (0.1, 0.2))
             self.assertEqual(self.client.opener.open.call_count, 3)
 
     def test_rate_limit_respects_retry_after_header(self):

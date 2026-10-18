@@ -45,9 +45,9 @@ class CountedJev:
         self.probabilities = []
 
     def assess(self, observation):
-        probability = self.client.assess(observation)
-        self.probabilities.append(probability)
-        return probability
+        assessment = self.client.assess(observation)
+        self.probabilities.append(assessment[0])
+        return assessment
 
 
 class CountedReviewer:

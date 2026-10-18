@@ -102,8 +102,10 @@ References: [registration](https://developers.openai.com/siwc/token-sharing-open
 The proxy listens on `127.0.0.1:8899`, and the Chrome extension API listens on
 `127.0.0.1:8765`. The API shares the same Jev worker, cloud review queue and SQLite
 approvals. `serve --api-port PORT` changes the API port. Options include `serve --port 8899
---threshold 0.95 --model jev-latest`. The threshold is a starting policy, not a
-validated measure of real-world detection accuracy.
+--threshold 0.95 --money-threshold 0.6 --model jev-latest`. When Jev judges a site
+to be about crypto, finance, or shopping, the stricter `--money-threshold` (default
+0.6) replaces `--threshold` (default 0.8). Both are starting policies, not
+validated measures of real-world detection accuracy.
 
 All commands accept `--state-dir PATH` before the command name. The default is
 `~/Library/Application Support/TrustLine`. Use the same directory for sign-in,
@@ -144,17 +146,22 @@ It works only in the Chrome session using this proxy and trusting its CA.
 
 ## Review behavior and privacy
 
-Jev receives only origin, hostname, HTTP method, resource type, HTTPS flag, and
-punycode flag. It receives no path, query, headers, cookies, or page content.
-Each request asks two Noul questions: whether the metadata meets the stated
-suspicious-origin criteria, and whether the hostname misspells a well-known name.
-For the second, code supplies candidate readings of the hostname with common
-substitutions undone (`visu4lstudio` reads as `visualstudio`). The higher
-probability is the result. It is not a separate confidence or severity score.
+For the URL check, Jev receives only origin, hostname, HTTP method, resource type,
+HTTPS flag, and punycode flag. It receives no path, query, headers, cookies, or
+page content. Each request asks whether the metadata meets the stated
+suspicious-origin criteria, whether the hostname misspells a well-known name, and
+whether the site is about crypto, finance, or shopping. For the misspelling check,
+code supplies candidate readings of the hostname with common substitutions undone
+(`visu4lstudio` reads as `visualstudio`). The higher of the first two
+probabilities is the result. It is not a separate confidence or severity score.
 
 For remote review, Cloudflare receives the destination origin and path. OpenAI
 receives the remote browser's rendered text, page/link/form metadata, screenshots,
-and action history. No local cookies, login sessions, form values, request bodies,
+and action history. Jev receives the landing page's origin, title, rendered text,
+and form fields (input types and names, and where each form submits), but no path,
+screenshot, or link targets. If Jev finds phishing or scam signs on the page above
+the applicable threshold, the review blocks the page, even when the cloud model
+would allow it or fails to finish. No local cookies, login sessions, form values, request bodies,
 or ChatGPT tokens are sent to the website or Cloudflare. Queries, URL credentials,
 and fragments are withheld. A successful check without query parameters cannot
 approve a URL containing them; those links remain inconclusive. Hash-only routes
